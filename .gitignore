@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+.venv_old/
+
+# Configuration and Sensitive Files
+# IMPORTANT: Never commit your API keys!
+config.py
+fyers_access_token.txt
+
+# Data Folders
+# These folders can contain large amounts of data and should not be versioned.
+historical_data/
+weekly_data/
+monthly_data/
+daily_with_indicators/
+weekly_with_indicators/
+monthly_with_indicators/
+
+# IDE and Editor specific
+.vscode/
+.idea/
+
+# OS-specific
+.DS_Store
+Thumbs.db
