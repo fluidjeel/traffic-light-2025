@@ -3,21 +3,18 @@
 # Description:
 # This script reads the daily, weekly, and monthly historical data,
 # calculates common technical indicators (like EMA, RSI, MACD),
-# and saves the enhanced data into new files.
+# and saves the enhanced data into new files. This version includes robust
+# error handling to skip indicators that fail on short datasets.
 #
 # Prerequisites:
 # 1. You must first run 'fyers_equity_scraper.py' to download daily data.
 # 2. You must then run 'resample_data.py' to generate weekly and monthly data.
-# 3. Required libraries installed: pip install pandas pandas-ta
+# 3. Required libraries installed: pip install pandas pandas-ta numpy==1.26.4
 #
 # How to use:
 # 1. Make sure the 'historical_data', 'weekly_data', and 'monthly_data' folders
 #    exist and contain the data files.
-# 2. Run this script. It will create three new folders:
-#    - 'daily_with_indicators'
-#    - 'weekly_with_indicators'
-#    - 'monthly_with_indicators'
-#    These folders will contain the original data plus the calculated indicators.
+# 2. Run this script. It will create the indicator-enriched data folders.
 
 import os
 import sys
@@ -67,26 +64,40 @@ def calculate_and_save_indicators(input_dir, output_dir):
                 print(" [Skipped: Empty file]")
                 continue
 
-            # --- Calculate Technical Indicators using pandas-ta ---
-            # You can customize this section by adding or removing indicators.
-            # For a full list of available indicators, see the pandas-ta documentation.
+            # --- Calculate Technical Indicators with Individual Error Handling ---
+            # This is more robust and prevents one failed indicator from stopping the whole process.
             
             # Exponential Moving Averages (EMA)
-            df.ta.ema(length=10, append=True)
-            df.ta.ema(length=20, append=True)
-            df.ta.ema(length=50, append=True)
-            df.ta.ema(length=200, append=True)
+            try:
+                if len(df) > 10: df.ta.ema(length=10, append=True)
+            except Exception: pass
+            try:
+                if len(df) > 20: df.ta.ema(length=20, append=True)
+            except Exception: pass
+            try:
+                if len(df) > 30: df.ta.ema(length=30, append=True)
+            except Exception: pass
+            try:
+                if len(df) > 50: df.ta.ema(length=50, append=True)
+            except Exception: pass
+            try:
+                if len(df) > 200: df.ta.ema(length=200, append=True)
+            except Exception: pass
 
             # Relative Strength Index (RSI)
-            df.ta.rsi(length=14, append=True)
+            try:
+                if len(df) > 14: df.ta.rsi(length=14, append=True)
+            except Exception: pass
             
             # Moving Average Convergence Divergence (MACD)
-            # This will add 3 columns: MACD, MACD_histogram, MACD_signal
-            df.ta.macd(fast=12, slow=26, signal=9, append=True)
+            try:
+                if len(df) > 26: df.ta.macd(fast=12, slow=26, signal=9, append=True)
+            except Exception: pass
 
             # Bollinger Bands (BBANDS)
-            # This will add 5 columns for upper, middle, lower bands, bandwidth, and percent.
-            df.ta.bbands(length=20, std=2, append=True)
+            try:
+                if len(df) > 20: df.ta.bbands(length=20, std=2, append=True)
+            except Exception: pass
 
             # --- Save the enhanced data ---
             output_path = os.path.join(output_dir, filename.replace('.csv', '_with_indicators.csv'))

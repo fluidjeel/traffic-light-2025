@@ -2,7 +2,8 @@
 #
 # Description:
 # This script intelligently downloads and updates historical daily data for all
-# stocks in the Nifty 200 index. It only fetches missing data since the last run.
+# stocks in the Nifty 200 index. It fetches data in 6-month batches to
+# handle long date ranges and avoid API limits.
 #
 # Prerequisites:
 # 1. A Fyers trading account and API App credentials.
@@ -13,9 +14,9 @@
 # How to use:
 # 1. Fill in your credentials in 'config.py'.
 # 2. Make sure 'nifty200.csv' is in the same directory.
-# 3. Run the script.
-#    - On the first run, it downloads the full history for each stock.
-#    - On subsequent runs, it only fetches and appends the new, missing data.
+# 3. To run an efficient incremental update, leave FORCE_DOWNLOAD_FROM_DATE as None.
+# 4. To force a full re-download, set FORCE_DOWNLOAD_FROM_DATE to your desired start date.
+# 5. Run the script.
 
 import os
 import sys
@@ -157,6 +158,12 @@ if __name__ == "__main__":
     else:
         # --- Main Execution Block for Incremental Download ---
         
+        # --- CONFIGURATION ---
+        # To force a full re-download from a specific date for ALL stocks,
+        # set a date here (e.g., "2023-01-01").
+        # To use the default incremental update logic, set this to None.
+        FORCE_DOWNLOAD_FROM_DATE = "2023-01-01" 
+
         DEFAULT_START_DATE = "2000-01-01"
         
         # 1. Define the output directory
@@ -180,16 +187,25 @@ if __name__ == "__main__":
             
             output_path = os.path.join(output_dir, f"{symbol_name}_daily.csv")
             to_date = datetime.now()
+            is_force_download = False
 
             # --- INTELLIGENT DATE LOGIC ---
-            if os.path.exists(output_path):
+            if FORCE_DOWNLOAD_FROM_DATE:
+                from_date = pd.to_datetime(FORCE_DOWNLOAD_FROM_DATE).date()
+                print(f"  > FORCE DOWNLOAD enabled. Fetching all data from {from_date.strftime('%Y-%m-%d')}")
+                is_force_download = True
+            elif os.path.exists(output_path):
                 # File exists, find the last date and fetch from the next day
                 try:
                     existing_df = pd.read_csv(output_path)
-                    last_date_str = existing_df['datetime'].iloc[-1]
-                    last_date = pd.to_datetime(last_date_str).date()
-                    from_date = last_date + timedelta(days=1)
-                    print(f"  > Existing data found. Fetching new data from {from_date.strftime('%Y-%m-%d')}")
+                    if not existing_df.empty:
+                        last_date_str = existing_df['datetime'].iloc[-1]
+                        last_date = pd.to_datetime(last_date_str).date()
+                        from_date = last_date + timedelta(days=1)
+                        print(f"  > Existing data found. Fetching new data from {from_date.strftime('%Y-%m-%d')}")
+                    else: # Handle empty file case
+                         print(f"  > Existing file is empty. Performing full download from {DEFAULT_START_DATE}")
+                         from_date = pd.to_datetime(DEFAULT_START_DATE).date()
                 except Exception as e:
                     print(f"  > Could not read existing file {output_path}. Performing a full download. Error: {e}")
                     from_date = pd.to_datetime(DEFAULT_START_DATE).date()
@@ -202,31 +218,58 @@ if __name__ == "__main__":
             if from_date > to_date.date():
                  print(f"  > Data is already up to date. Skipping.")
                  continue
+            
+            # --- BATCHING LOGIC ---
+            all_data_batches = []
+            batch_start_date = from_date
 
-            # Format dates for the API call
-            from_date_str = from_date.strftime('%Y-%m-%d')
-            to_date_str = to_date.strftime('%Y-%m-%d')
-            
-            # Format symbol for Fyers API
-            fyers_symbol = f"NSE:{symbol_name}-EQ"
-            
-            # Fetch the data
-            new_data_df = get_historical_data(fyers_symbol, "D", from_date_str, to_date_str)
+            while batch_start_date <= to_date.date():
+                # Calculate the end of the 6-month batch
+                # Using pandas DateOffset is robust for adding months
+                batch_end_dt = pd.to_datetime(batch_start_date) + pd.DateOffset(months=6) - timedelta(days=1)
+                
+                # Ensure the batch end date does not exceed the final to_date
+                if batch_end_dt > to_date:
+                    batch_end_dt = to_date
+
+                # Format dates for the API call
+                from_date_str = batch_start_date.strftime('%Y-%m-%d')
+                to_date_str = batch_end_dt.strftime('%Y-%m-%d')
+                
+                print(f"    > Fetching batch: {from_date_str} to {to_date_str}")
+
+                # Format symbol for Fyers API
+                fyers_symbol = f"NSE:{symbol_name}-EQ"
+
+                # Fetch the data for the current batch
+                batch_df = get_historical_data(fyers_symbol, "D", from_date_str, to_date_str)
+                
+                if not batch_df.empty:
+                    all_data_batches.append(batch_df)
+
+                # Add a small delay between batch requests
+                time.sleep(1.1)
+
+                # Set the start date for the next batch
+                batch_start_date = batch_end_dt.date() + timedelta(days=1)
+
+            # After the loop, combine all fetched batches
+            if all_data_batches:
+                new_data_df = pd.concat(all_data_batches)
+            else:
+                new_data_df = pd.DataFrame() # Ensure it's an empty df if no data was fetched
             
             # Save or append the data
             if not new_data_df.empty:
-                if os.path.exists(output_path):
-                    # Append new data without headers
+                if is_force_download or not os.path.exists(output_path):
+                    # Overwrite the file if it's a force download or a new file
+                    new_data_df.to_csv(output_path, mode='w', header=True)
+                    print(f"  > Success: Saved {len(new_data_df)} records to {output_path}")
+                else:
+                    # Append new data if it's an incremental update
                     new_data_df.to_csv(output_path, mode='a', header=False)
                     print(f"  > Success: Appended {len(new_data_df)} new records to {output_path}")
-                else:
-                    # Save new file with headers
-                    new_data_df.to_csv(output_path)
-                    print(f"  > Success: Saved {len(new_data_df)} records to {output_path}")
             else:
                 print(f"  > Info: No new data returned for {symbol_name}.")
-
-            # Add a small delay to respect API rate limits
-            time.sleep(1.1)
             
         print("\n--- Data update complete! ---")
