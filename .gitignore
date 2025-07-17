@@ -20,6 +20,8 @@ monthly_data/
 daily_with_indicators/
 weekly_with_indicators/
 monthly_with_indicators/
+backtest_logs/
+
 
 # IDE and Editor specific
 .vscode/
@@ -28,3 +30,6 @@ monthly_with_indicators/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+*.csv
+*.log
