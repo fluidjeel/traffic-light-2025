@@ -12,7 +12,7 @@ config = {
     'risk_per_trade_percent': 3.0,
     'data_folder': 'daily_with_indicators',
     'log_folder': 'backtest_logs',
-    'start_date': '2020-01-01',
+    'start_date': '2024-01-01',
     'end_date': '2025-07-16',
     'nifty_list_csv': 'nifty200.csv',
     'ema_period': 30,
@@ -122,7 +122,7 @@ def run_backtest(cfg):
         to_remove = []
         todays_exits = [] 
         
-        # --- REVISED EXIT LOGIC WITH DAY 1 TRAILING ---
+        # --- EXIT LOGIC ---
         for pos_id, position in list(portfolio['positions'].items()):
             symbol = position['symbol']
             if date not in stock_data[symbol].index:
@@ -130,7 +130,6 @@ def run_backtest(cfg):
                 
             data = stock_data[symbol].loc[date]
             
-            # 1. Check for Partial Profit on Leg 1
             if not position['partial_exit'] and data['high'] >= position['target']:
                 sell_shares = position['shares'] // 2
                 exit_price = position['target']
@@ -152,7 +151,6 @@ def run_backtest(cfg):
                 position['partial_exit'] = True
                 position['stop_loss'] = position['entry_price'] 
 
-            # 2. Check for Stop-Loss hit (on either full or partial position)
             if position['shares'] > 0 and data['low'] <= position['stop_loss']:
                 exit_price = position['stop_loss']
                 exit_value = position['shares'] * exit_price
@@ -170,35 +168,24 @@ def run_backtest(cfg):
                 })
                 
                 to_remove.append(pos_id)
-                continue # Position is closed, no further management needed today
+                continue
 
-            # 3. Daily Trailing Stop Adjustment (active from Day 1, once in profit)
-            if position['shares'] > 0 and data['close'] > position['entry_price']:
-                
-                # First, ensure the stop-loss is at least at the breakeven point.
-                # This is a one-way adjustment; it will never move down.
-                breakeven_stop = max(position['stop_loss'], position['entry_price'])
-                position['stop_loss'] = breakeven_stop
-
-                # Next, if today was a green candle, trail the stop to its low.
-                # This is also a one-way adjustment. The stop will only move up
-                # to the low of the latest green candle that provides a higher stop level.
-                if data['green_candle']:
-                    new_trail_stop = max(position['stop_loss'], data['low'])
-                    position['stop_loss'] = new_trail_stop
-
+            if position['shares'] > 0 and position['partial_exit'] and data['green_candle']:
+                position['stop_loss'] = max(position['stop_loss'], data['low'])
 
         for pos_id in to_remove:
             portfolio['positions'].pop(pos_id, None)
         
         portfolio['cash'] += exit_proceeds
 
-        # --- EQUITY RECALCULATION ---
+        # --- BUG FIX: Recalculate equity after exits and before new entries ---
+        # This ensures risk calculations are based on the most current portfolio value.
         equity_after_exits = portfolio['cash']
         for pos in portfolio['positions'].values():
              if date in stock_data[pos['symbol']].index:
                 equity_after_exits += pos['shares'] * stock_data[pos['symbol']].loc[date]['close']
         portfolio['equity'] = equity_after_exits
+        # --- END OF BUG FIX ---
 
         # --- ENTRY LOGIC ---
         for symbol, df in stock_data.items():
@@ -243,6 +230,7 @@ def run_backtest(cfg):
                     if risk_per_share <= 0:
                         continue
                         
+                    # Use the newly updated equity for risk calculation
                     equity_at_entry = portfolio['equity']
                     risk_capital = equity_at_entry * (cfg['risk_per_trade_percent'] / 100)
                     shares = math.floor(risk_capital / risk_per_share)
@@ -264,7 +252,7 @@ def run_backtest(cfg):
             except Exception as e:
                 pass
         
-        # --- FINAL EOD EQUITY CALCULATION ---
+        # --- FINAL END OF DAY EQUITY CALCULATION (for logging) ---
         eod_equity = portfolio['cash']
         for pos in portfolio['positions'].values():
             if date in stock_data[pos['symbol']].index:

@@ -1,18 +1,18 @@
 # calculate_indicators.py
 #
 # Description:
-# This script reads the daily, weekly, and monthly historical data,
+# This script reads the daily, 2-day, weekly, and monthly historical data,
 # calculates common technical indicators (like EMA, RSI, MACD),
 # and saves the enhanced data into new files. This version includes robust
 # error handling to skip indicators that fail on short datasets.
 #
 # Prerequisites:
 # 1. You must first run 'fyers_equity_scraper.py' to download daily data.
-# 2. You must then run 'resample_data.py' to generate weekly and monthly data.
+# 2. You must then run 'resample_data.py' to generate the resampled data.
 # 3. Required libraries installed: pip install pandas pandas-ta numpy==1.26.4
 #
 # How to use:
-# 1. Make sure the 'historical_data', 'weekly_data', and 'monthly_data' folders
+# 1. Make sure the 'historical_data', '2day_data', 'weekly_data', and 'monthly_data' folders
 #    exist and contain the data files.
 # 2. Run this script. It will create the indicator-enriched data folders.
 
@@ -115,6 +115,9 @@ if __name__ == "__main__":
     # Process daily data
     calculate_and_save_indicators("historical_data", "daily_with_indicators")
     
+    # Process 2-day data
+    calculate_and_save_indicators("2day_data", "2day_with_indicators")
+
     # Process weekly data
     calculate_and_save_indicators("weekly_data", "weekly_with_indicators")
 

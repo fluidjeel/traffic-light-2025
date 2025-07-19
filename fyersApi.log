@@ -31,3 +31,4 @@
 {"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2025-07-17 23:54:48,652+0530","service":"FyersAPI"}
 {"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2025-07-17 23:54:50,534+0530","service":"FyersAPI"}
 {"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/history","Error":{"code":-300,"message":"Invalid symbol provided","s":"error"}},"timestamp":"2025-07-17 23:54:52,432+0530","service":"FyersAPI"}
+{"level":"ERROR","location":"[get_call:146] fyersModel","message":{"API":"/profile","Error":{"s":"error","code":-8,"message":"Your token has expired. Please generate a token"}},"timestamp":"2025-07-19 20:23:44,645+0530","service":"FyersAPI"}

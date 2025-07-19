@@ -162,7 +162,7 @@ if __name__ == "__main__":
         # To force a full re-download from a specific date for ALL stocks,
         # set a date here (e.g., "2023-01-01").
         # To use the default incremental update logic, set this to None.
-        FORCE_DOWNLOAD_FROM_DATE = "2020-01-01" 
+        FORCE_DOWNLOAD_FROM_DATE = None  # e.g., "2023-01-01" 
 
         DEFAULT_START_DATE = "2000-01-01"
         
