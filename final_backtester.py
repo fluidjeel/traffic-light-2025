@@ -8,8 +8,9 @@ import sys
 # --- CONFIGURATION ---
 config = {
     'initial_capital': 1000000,
-    'risk_per_trade_percent': 1.0,
-    'timeframe': 'daily', 
+    'risk_per_trade_percent': 4.0,
+    # Possible values: 'daily', '2day', 'weekly', 'monthly'
+    'timeframe': 'weekly', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
@@ -30,8 +31,8 @@ config = {
     'atr_multiplier': 1.4,
     'rs_filter': True,
     'rs_index_symbol': 'NIFTY200',
-    'rs_period': 30, # Lookback period in days for return calculation
-    'rs_outperformance_pct': 0.0 # Optional: require outperformance by a certain percentage
+    'rs_period': 30, 
+    'rs_outperformance_pct': 0.0
 }
 
 
@@ -65,27 +66,35 @@ def run_backtest(cfg):
         print(f"Error: Symbol file not found at {cfg['nifty_list_csv']}")
         return
 
-    # --- Load Index Data (for both Market Regime and RS Filter) ---
-    index_df = None
-    if cfg['market_regime_filter'] or cfg['rs_filter']:
-        try:
-            # Both filters use the daily index data
-            regime_data_folder = os.path.join(cfg['data_folder_base'], 'daily')
-            index_filename = f"{cfg['regime_index_symbol']}_INDEX_daily_with_indicators.csv"
-            index_path = os.path.join(regime_data_folder, index_filename)
-            index_df = pd.read_csv(index_path, index_col=0, parse_dates=True)
-            index_df.columns = [col.lower() for col in index_df.columns]
-            
-            # Calculate returns for the RS filter
-            if cfg['rs_filter']:
-                index_df['return'] = index_df['close'].pct_change(periods=cfg['rs_period']) * 100
+    # --- Load Index Data and Set Master Clock for Backtest Loop ---
+    index_df_daily = None
+    all_dates = []
+    try:
+        daily_index_folder = os.path.join(cfg['data_folder_base'], 'daily')
+        index_filename = f"{cfg['regime_index_symbol']}_INDEX_daily_with_indicators.csv"
+        index_path = os.path.join(daily_index_folder, index_filename)
+        index_df_daily = pd.read_csv(index_path, index_col=0, parse_dates=True)
+        index_df_daily.columns = [col.lower() for col in index_df_daily.columns]
+        
+        if cfg['rs_filter']:
+            index_df_daily['return'] = index_df_daily['close'].pct_change(periods=cfg['rs_period']) * 100
+        
+        print(f"Successfully loaded Daily Index data from {index_path}")
 
-            print(f"Successfully loaded Index data from {index_path}")
-        except FileNotFoundError:
-            print(f"Error: Index file not found at {index_path}. Disabling Market Regime and RS filters.")
-            cfg['market_regime_filter'] = False
-            cfg['rs_filter'] = False
-            index_df = None
+        # Create the master date loop from the resampled index to ensure consistency
+        if cfg['timeframe'] == 'daily':
+            all_dates = index_df_daily.loc[cfg['start_date']:cfg['end_date']].index
+        else:
+            timeframe_rules = {'2day': '2D', 'weekly': 'W-MON', 'monthly': 'MS'}
+            resampled_index = index_df_daily.resample(timeframe_rules[cfg['timeframe']]).last()
+            all_dates = resampled_index.loc[cfg['start_date']:cfg['end_date']].index
+        
+        print(f"Master date loop created for '{cfg['timeframe']}' timeframe with {len(all_dates)} periods.")
+
+    except FileNotFoundError:
+        print(f"Error: Index file not found at {index_path}. Disabling filters.")
+        cfg['market_regime_filter'] = False
+        cfg['rs_filter'] = False
 
     stock_data = {}
     print(f"Loading and preprocessing data from '{data_folder}'...")
@@ -100,9 +109,7 @@ def run_backtest(cfg):
                     df['red_candle'] = df['close'] < df['open']
                     df['green_candle'] = df['close'] > df['open']
                     if cfg['volume_filter']: df['volume_ma'] = df['volume'].rolling(window=cfg['volume_ma_period']).mean()
-                    # Calculate returns for the RS filter
-                    if cfg['rs_filter']:
-                        df['return'] = df['close'].pct_change(periods=cfg['rs_period']) * 100
+                    if cfg['rs_filter']: df['return'] = df['close'].pct_change(periods=cfg['rs_period']) * 100
                     stock_data[symbol] = df
             except Exception as e: print(f"Error processing {symbol}: {str(e)}")
     
@@ -111,7 +118,6 @@ def run_backtest(cfg):
 
     portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
     missed_trades_capital = 0
-    all_dates = sorted(set().union(*[df.index for df in stock_data.values()]))
     
     print("Starting backtest simulation...")
     for i, date in enumerate(all_dates):
@@ -142,8 +148,8 @@ def run_backtest(cfg):
         portfolio['equity'] = equity_after_exits
 
         market_uptrend = True
-        if cfg['market_regime_filter'] and date in index_df.index:
-            if index_df.loc[date]['close'] < index_df.loc[date][f"ema_{cfg['regime_ma_period']}"]: market_uptrend = False
+        if cfg['market_regime_filter'] and date in index_df_daily.index:
+            if index_df_daily.loc[date]['close'] < index_df_daily.loc[date][f"ema_{cfg['regime_ma_period']}"]: market_uptrend = False
         
         if market_uptrend:
             for symbol, df in stock_data.items():
@@ -151,17 +157,16 @@ def run_backtest(cfg):
                 if date not in df.index: continue
                 try:
                     loc = df.index.get_loc(date)
-                    if loc < cfg['rs_period']: continue
+                    if loc < max(cfg['rs_period'], 2): continue
                     prev1 = df.iloc[loc-1]
                     if not prev1['green_candle'] or prev1['close'] < (prev1['high'] + prev1['low']) / 2: continue
                     if not (prev1['close'] > prev1[f"ema_{cfg['ema_period']}"]): continue
                     if not get_consecutive_red_candles(df, loc): continue
                     
-                    # --- RELATIVE STRENGTH FILTER ---
                     rs_ok = True
-                    if cfg['rs_filter'] and date in index_df.index:
+                    if cfg['rs_filter'] and date in index_df_daily.index:
                         stock_return = df.loc[date, 'return']
-                        index_return = index_df.loc[date, 'return']
+                        index_return = index_df_daily.loc[date, 'return']
                         if pd.isna(stock_return) or pd.isna(index_return) or (stock_return < index_return + cfg['rs_outperformance_pct']):
                             rs_ok = False
                     if not rs_ok: continue
@@ -249,8 +254,9 @@ Missed Trades (Capital): {missed_trades_capital}
     summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report.txt")
     trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail.csv")
     with open(summary_filename, 'w') as f: f.write(summary_content)
+    
+    log_columns = ['symbol', 'entry_date', 'exit_date', 'entry_price', 'pnl', 'exit_type', 'portfolio_equity_on_entry', 'portfolio_equity_on_exit', 'risk_per_share', 'initial_shares', 'initial_stop_loss']
     if not trades_df.empty:
-        log_columns = ['symbol', 'entry_date', 'exit_date', 'entry_price', 'pnl', 'exit_type', 'portfolio_equity_on_entry', 'portfolio_equity_on_exit', 'risk_per_share', 'initial_shares', 'initial_stop_loss']
         trades_df = trades_df.reindex(columns=log_columns)
         trades_df.to_csv(trades_filename, index=False)
     else:
