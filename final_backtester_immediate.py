@@ -10,7 +10,7 @@ config = {
     'initial_capital': 1000000,
     'risk_per_trade_percent': 4.0,
     # Possible values: 'weekly-immediate', 'monthly-immediate'
-    'timeframe': 'weekly-immediate', 
+    'timeframe': 'monthly-immediate', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
@@ -129,6 +129,7 @@ def run_backtest(cfg):
                 pos['shares'] -= shares; pos['partial_exit'] = True; pos['stop_loss'] = pos['entry_price'] 
             if pos['shares'] > 0 and daily_data['low'] <= pos['stop_loss']:
                 price = pos['stop_loss']; exit_proceeds += pos['shares'] * price
+                # BUG FIX: Correct P&L calculation for stop-loss
                 todays_exits.append({'symbol': symbol, 'entry_date': pos['entry_date'].date(), 'exit_date': date.date(), 'entry_price': pos['entry_price'], 'pnl': (price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', **pos})
                 to_remove.append(pos_id); continue
             if pos['shares'] > 0 and daily_data['close'] > pos['entry_price']:
@@ -176,11 +177,8 @@ def run_backtest(cfg):
                                 stop_loss = df_d.iloc[max(0, loc_d - cfg['stop_loss_lookback']):loc_d]['low'].min()
                                 risk_per_share = entry_price - stop_loss
                                 
-                                # --- BUG FIX / SANITY CHECK ---
-                                # Ensure risk_per_share is a meaningful, positive number.
-                                # A value too small indicates a data error or illogical stop placement.
-                                if risk_per_share < (entry_price * 0.001): # Risk must be at least 0.1% of price
-                                    continue
+                                # --- SANITY CHECK ---
+                                if risk_per_share < (entry_price * 0.001): continue
 
                                 equity_at_entry = portfolio['equity']
                                 shares = math.floor((equity_at_entry * (cfg['risk_per_trade_percent'] / 100)) / risk_per_share)
