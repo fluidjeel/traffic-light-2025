@@ -10,6 +10,8 @@ Data Processing: The calculate_indicators.py script is the next station. It take
 
 Strategy Simulation: The final_backtester.py and final_backtester_immediate.py scripts are the final stations. They take the processed, indicator-rich data and run the trading strategy simulation, producing the final performance reports.
 
+Post-Hoc Analysis: The analyze_missed_trades.py script is an optional final step to analyze the performance of trades that were identified but not taken due to capital constraints.
+
 Part 2: Script-by-Script Breakdown
 A. fyers_equity_scraper.py & fyers_nifty200_index_scraper.py
 1. Functional Purpose:

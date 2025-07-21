@@ -8,9 +8,8 @@ import sys
 # --- CONFIGURATION ---
 config = {
     'initial_capital': 1000000,
-    'risk_per_trade_percent': 4.0,
-    # Possible values: 'daily', '2day', 'weekly', 'monthly'
-    'timeframe': 'weekly', 
+    'risk_per_trade_percent': 0.1,
+    'timeframe': 'daily', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
@@ -32,7 +31,9 @@ config = {
     'rs_filter': True,
     'rs_index_symbol': 'NIFTY200',
     'rs_period': 30, 
-    'rs_outperformance_pct': 0.0
+    'rs_outperformance_pct': 0.0,
+    # --- NEW: Missed Trade Analysis ---
+    'log_missed_trades': True
 }
 
 
@@ -66,7 +67,6 @@ def run_backtest(cfg):
         print(f"Error: Symbol file not found at {cfg['nifty_list_csv']}")
         return
 
-    # --- Load Index Data and Set Master Clock for Backtest Loop ---
     index_df_daily = None
     all_dates = []
     try:
@@ -75,22 +75,16 @@ def run_backtest(cfg):
         index_path = os.path.join(daily_index_folder, index_filename)
         index_df_daily = pd.read_csv(index_path, index_col=0, parse_dates=True)
         index_df_daily.columns = [col.lower() for col in index_df_daily.columns]
-        
         if cfg['rs_filter']:
             index_df_daily['return'] = index_df_daily['close'].pct_change(periods=cfg['rs_period']) * 100
-        
         print(f"Successfully loaded Daily Index data from {index_path}")
-
-        # Create the master date loop from the resampled index to ensure consistency
         if cfg['timeframe'] == 'daily':
             all_dates = index_df_daily.loc[cfg['start_date']:cfg['end_date']].index
         else:
             timeframe_rules = {'2day': '2D', 'weekly': 'W-MON', 'monthly': 'MS'}
             resampled_index = index_df_daily.resample(timeframe_rules[cfg['timeframe']]).last()
             all_dates = resampled_index.loc[cfg['start_date']:cfg['end_date']].index
-        
         print(f"Master date loop created for '{cfg['timeframe']}' timeframe with {len(all_dates)} periods.")
-
     except FileNotFoundError:
         print(f"Error: Index file not found at {index_path}. Disabling filters.")
         cfg['market_regime_filter'] = False
@@ -117,7 +111,7 @@ def run_backtest(cfg):
     print(f"Successfully processed data for {len(stock_data)} symbols.")
 
     portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
-    missed_trades_capital = 0
+    missed_trades_log = [] # New log for missed trades
     
     print("Starting backtest simulation...")
     for i, date in enumerate(all_dates):
@@ -186,7 +180,14 @@ def run_backtest(cfg):
                         if shares > 0 and (shares * entry_price) <= portfolio['cash']:
                             portfolio['cash'] -= shares * entry_price
                             portfolio['positions'][f"{symbol}_{date}"] = {'symbol': symbol, 'entry_date': date, 'entry_price': entry_price, 'stop_loss': stop_loss, 'shares': shares, 'target': entry_price + risk_per_share, 'partial_exit': False, 'portfolio_equity_on_entry': equity_at_entry, 'risk_per_share': risk_per_share, 'initial_shares': shares, 'initial_stop_loss': stop_loss}
-                        elif shares > 0: missed_trades_capital += 1
+                        elif shares > 0:
+                            # Log the missed trade if the flag is enabled
+                            if cfg['log_missed_trades']:
+                                missed_trades_log.append({
+                                    'symbol': symbol, 'entry_date': date,
+                                    'entry_price': entry_price, 'initial_stop_loss': stop_loss,
+                                    'target': entry_price + risk_per_share
+                                })
                 except Exception: pass
         
         eod_equity = portfolio['cash']
@@ -248,11 +249,13 @@ Win Rate (of events): {win_rate:.1f}%
 Profit Factor: {profit_factor:.2f}
 Average Winning Event: {avg_win:,.2f}
 Average Losing Event: {avg_loss:,.2f}
-Missed Trades (Capital): {missed_trades_capital}
+Missed Trades (Capital): {len(missed_trades_log)}
 """
     
     summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report.txt")
     trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail.csv")
+    missed_trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_missed_trades_log.csv")
+    
     with open(summary_filename, 'w') as f: f.write(summary_content)
     
     log_columns = ['symbol', 'entry_date', 'exit_date', 'entry_price', 'pnl', 'exit_type', 'portfolio_equity_on_entry', 'portfolio_equity_on_exit', 'risk_per_share', 'initial_shares', 'initial_stop_loss']
@@ -261,6 +264,11 @@ Missed Trades (Capital): {missed_trades_capital}
         trades_df.to_csv(trades_filename, index=False)
     else:
         with open(trades_filename, 'w') as f: f.write(",".join(log_columns) + "\n")
+        
+    if cfg['log_missed_trades'] and missed_trades_log:
+        missed_trades_df = pd.DataFrame(missed_trades_log)
+        missed_trades_df.to_csv(missed_trades_filename, index=False)
+
     print(summary_content)
     print(f"Backtest completed in {time.time()-start_time:.2f} seconds")
     print(f"Reports saved to '{cfg['log_folder']}'")

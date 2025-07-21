@@ -9,13 +9,15 @@ The project is a modular system composed of several Python scripts that work in 
 
 Data Acquisition (fyers_..._scraper.py scripts): These scripts connect to the Fyers API to download and maintain a local database of daily historical stock and index data.
 
-Indicator Calculation (calculate_indicators.py): This script processes the raw daily data. It first resamples the data into multiple timeframes (daily, 2-day, weekly, monthly) and then calculates and adds the necessary technical indicators (ema_30, ema_50, atr_14, atr_ma_30, etc.) to each data file. The outputs are saved into separate directories for each timeframe (e.g., data/processed/daily/).
+Indicator Calculation (calculate_indicators.py): This script processes the raw daily data. It first resamples the data into multiple timeframes (daily, 2-day, weekly, monthly) and then calculates and adds a suite of technical indicators (ema_30, ema_50, atr_14, atr_ma_30, etc.) to each data file. The outputs are saved into separate directories for each timeframe (e.g., data/processed/daily/).
 
 Backtesting Engines: The project now utilizes two distinct backtesters for different strategic approaches:
 
 final_backtester.py: This is the engine for standard, end-of-period strategies. It operates on a fixed timeframe (e.g., daily, weekly) and makes all entry decisions based on completed candles for that timeframe.
 
-final_backtester_immediate.py: This is the specialized engine for accelerated "fast entry" strategies. It uses a hybrid model where the setup is identified on a higher timeframe (weekly or monthly), but the entry trigger is scanned for and executed on a daily basis.
+final_backtester_immediate.py: This is the specialized engine for accelerated, "fast entry" strategies. It uses a hybrid model where the setup is identified on a higher timeframe (weekly or monthly), but the entry trigger is scanned for and executed on a daily basis.
+
+Post-Hoc Analysis (analyze_missed_trades.py): This script is run after a backtest to analyze the performance of trades that were identified but could not be taken due to capital constraints.
 
 3. Core Trading Strategy Routines
 The following describes the routines implemented in the two backtesting scripts.
@@ -67,11 +69,11 @@ Leg 1 (Partial Profit): 50% of the position is sold at a 1:1 risk/reward target.
 
 Leg 2 (Trailing Stop): For any profitable trade, the stop-loss is trailed daily to the higher of breakeven or the low of the most recent green candle.
 
-Final Exit: The entire remaining position is closed if the price hits the current stop-loss.
+Final Exit: The entire remaining position is closed if the price hits the current stop-loss level.
 
 4. Data and File System Structure
 Input Data: Raw data is in historical_data/. Processed data is in data/processed/, subdivided by timeframe (e.g., data/processed/daily/).
 
 Filenames: Stock data is named {SYMBOL}_daily_with_indicators.csv. Index data is named NIFTY200_INDEX_daily_with_indicators.csv.
 
-Output: Results are saved to backtest_logs/, including a .txt summary and a .csv detailed trade log with granular audit columns like portfolio_equity_on_entry and initial_shares.
+Output: Results are saved to backtest_logs/, including a .txt summary and a .csv detailed trade log, both prefixed with a timestamp. A log of missed trades is also generated if enabled.
