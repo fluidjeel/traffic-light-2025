@@ -1,277 +1,376 @@
 import pandas as pd
 import os
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
-import sys
+from collections import defaultdict
 
-# --- CONFIGURATION ---
-config = {
-    'initial_capital': 1000000,
-    'risk_per_trade_percent': 0.1,
-    'timeframe': 'daily', 
-    'data_folder_base': 'data/processed',
-    'log_folder': 'backtest_logs',
-    'start_date': '2020-01-01',
-    'end_date': '2025-07-16',
-    'nifty_list_csv': 'nifty200.csv',
-    'ema_period': 30,
-    'stop_loss_lookback': 5,
-    # --- FILTERS ---
-    'market_regime_filter': True,
-    'regime_index_symbol': 'NIFTY200',
-    'regime_ma_period': 50,
-    'volume_filter': True,
-    'volume_ma_period': 20,
-    'volume_multiplier': 1.3,
-    'atr_filter': False,
-    'atr_period': 14,
-    'atr_ma_period': 30,
-    'atr_multiplier': 1.4,
-    'rs_filter': True,
-    'rs_index_symbol': 'NIFTY200',
-    'rs_period': 30, 
-    'rs_outperformance_pct': 0.0,
-    # --- NEW: Missed Trade Analysis ---
-    'log_missed_trades': True
-}
-
+# Configuration
+INITIAL_CAPITAL = 1000000
+RISK_PER_TRADE_PERCENT = 4.0
+DATA_FOLDER = 'daily_with_indicators'
+LOG_FOLDER = 'backtest_logs'
+START_DATE = '2020-01-01'
+END_DATE = '2025-07-16'
 
 def parse_datetime(dt_str):
-    formats = ['%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M', '%Y-%m-%d']
+    formats = [
+        '%d-%m-%Y %H:%M',
+        '%Y-%m-%d %H:%M:%S'
+    ]
     for fmt in formats:
-        try: return datetime.strptime(dt_str, fmt)
-        except ValueError: continue
-    try: return pd.to_datetime(dt_str).to_pydatetime().replace(tzinfo=None)
-    except ValueError: raise ValueError(f"Time data '{dt_str}' doesn't match any expected format")
-
+        try:
+            return datetime.strptime(dt_str, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Time data '{dt_str}' doesn't match any expected format")
 
 def get_consecutive_red_candles(df, current_loc):
     red_candles = []
-    i = current_loc - 2 
+    i = current_loc - 2
     while i >= 0 and df.iloc[i]['red_candle']:
         red_candles.append(df.iloc[i])
         i -= 1
     return red_candles
 
-def run_backtest(cfg):
-    start_time = time.time()
-    data_folder = os.path.join(cfg['data_folder_base'], cfg['timeframe'])
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(cfg['log_folder'], exist_ok=True)
+def calculate_metrics(trades):
+    if not trades:
+        return {
+            'win_rate': 0,
+            'profit_factor': 0,
+            'avg_win': 0,
+            'avg_loss': 0,
+            'max_drawdown': 0
+        }
     
-    try:
-        symbols = pd.read_csv(cfg['nifty_list_csv'])['Symbol'].tolist()
-        print(f"Loaded {len(symbols)} symbols from {cfg['nifty_list_csv']}")
-    except FileNotFoundError:
-        print(f"Error: Symbol file not found at {cfg['nifty_list_csv']}")
-        return
+    winning_trades = [t for t in trades if t['pnl'] > 0]
+    losing_trades = [t for t in trades if t['pnl'] <= 0]
+    
+    win_rate = len(winning_trades)/len(trades) if trades else 0
+    profit_factor = (sum(t['pnl'] for t in winning_trades)/abs(sum(t['pnl'] for t in losing_trades))) if losing_trades else math.inf
+    
+    equity_curve = [INITIAL_CAPITAL]
+    for trade in trades:
+        equity_curve.append(equity_curve[-1] + trade['pnl'])
+    
+    peak = equity_curve[0]
+    max_drawdown = 0
+    for value in equity_curve:
+        if value > peak:
+            peak = value
+        dd = (peak - value)/peak
+        if dd > max_drawdown:
+            max_drawdown = dd
+    
+    return {
+        'win_rate': win_rate,
+        'profit_factor': profit_factor,
+        'avg_win': sum(t['pnl'] for t in winning_trades)/len(winning_trades) if winning_trades else 0,
+        'avg_loss': sum(t['pnl'] for t in losing_trades)/len(losing_trades) if losing_trades else 0,
+        'max_drawdown': max_drawdown
+    }
 
-    index_df_daily = None
-    all_dates = []
-    try:
-        daily_index_folder = os.path.join(cfg['data_folder_base'], 'daily')
-        index_filename = f"{cfg['regime_index_symbol']}_INDEX_daily_with_indicators.csv"
-        index_path = os.path.join(daily_index_folder, index_filename)
-        index_df_daily = pd.read_csv(index_path, index_col=0, parse_dates=True)
-        index_df_daily.columns = [col.lower() for col in index_df_daily.columns]
-        if cfg['rs_filter']:
-            index_df_daily['return'] = index_df_daily['close'].pct_change(periods=cfg['rs_period']) * 100
-        print(f"Successfully loaded Daily Index data from {index_path}")
-        if cfg['timeframe'] == 'daily':
-            all_dates = index_df_daily.loc[cfg['start_date']:cfg['end_date']].index
-        else:
-            timeframe_rules = {'2day': '2D', 'weekly': 'W-MON', 'monthly': 'MS'}
-            resampled_index = index_df_daily.resample(timeframe_rules[cfg['timeframe']]).last()
-            all_dates = resampled_index.loc[cfg['start_date']:cfg['end_date']].index
-        print(f"Master date loop created for '{cfg['timeframe']}' timeframe with {len(all_dates)} periods.")
-    except FileNotFoundError:
-        print(f"Error: Index file not found at {index_path}. Disabling filters.")
-        cfg['market_regime_filter'] = False
-        cfg['rs_filter'] = False
-
+def main():
+    start_time = time.time()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(LOG_FOLDER, exist_ok=True)
+    
+    print("Starting backtest...")
+    print(f"Time: {timestamp}")
+    print(f"Parameters: Risk={RISK_PER_TRADE_PERCENT}%, Date Range={START_DATE} to {END_DATE}")
+    
+    # Load symbols
+    symbols = pd.read_csv('nifty200.csv')['Symbol'].tolist()
+    print(f"\nLoaded {len(symbols)} symbols")
+    
+    # Initialize tracking
+    missed_trades = {
+        'due_to_capital': [],
+        'due_to_risk': [],
+        'valid_setups': 0
+    }
+    setup_stats = defaultdict(int)
+    
+    # Load and preprocess data
+    print("\nProcessing stock data...")
     stock_data = {}
-    print(f"Loading and preprocessing data from '{data_folder}'...")
     for symbol in symbols:
-        file_path = os.path.join(data_folder, f"{symbol}_daily_with_indicators.csv")
+        file_path = os.path.join(DATA_FOLDER, f"{symbol}_daily_with_indicators.csv")
         if os.path.exists(file_path):
             try:
-                df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+                df = pd.read_csv(file_path)
                 df.columns = [col.lower() for col in df.columns]
-                df = df.loc[cfg['start_date']:cfg['end_date']]
+                df['datetime'] = df['datetime'].apply(parse_datetime)
+                df = df[(df['datetime'] >= pd.Timestamp(START_DATE)) & 
+                        (df['datetime'] <= pd.Timestamp(END_DATE))]
+                
                 if not df.empty:
+                    df.set_index('datetime', inplace=True)
+                    df.sort_index(inplace=True)
                     df['red_candle'] = df['close'] < df['open']
                     df['green_candle'] = df['close'] > df['open']
-                    if cfg['volume_filter']: df['volume_ma'] = df['volume'].rolling(window=cfg['volume_ma_period']).mean()
-                    if cfg['rs_filter']: df['return'] = df['close'].pct_change(periods=cfg['rs_period']) * 100
+                    df['ema_30'] = df['ema_30'].ffill()
                     stock_data[symbol] = df
-            except Exception as e: print(f"Error processing {symbol}: {str(e)}")
-    
-    if not stock_data: print("No valid stock data available."); return
-    print(f"Successfully processed data for {len(stock_data)} symbols.")
+                    print(f"Processed {symbol}", end='\r')
+            except Exception as e:
+                print(f"\nError processing {symbol}: {str(e)}")
+    print(f"\nFinished processing {len(stock_data)} symbols")
 
-    portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
-    missed_trades_log = [] # New log for missed trades
+    if not stock_data:
+        print("No valid stock data available")
+        return
     
-    print("Starting backtest simulation...")
+    # Initialize portfolio
+    portfolio = {
+        'cash': INITIAL_CAPITAL,
+        'equity': INITIAL_CAPITAL,
+        'positions': {},
+        'trades': [],
+        'daily_values': [INITIAL_CAPITAL]
+    }
+    
+    # Main backtest loop
+    all_dates = sorted(set().union(*[df.index for df in stock_data.values()]))
+    total_days = len(all_dates)
+    print(f"\nRunning backtest for {total_days} days...")
+    
     for i, date in enumerate(all_dates):
-        progress_str = f"Processing {i+1}/{len(all_dates)}: {date.date()} | Equity: {portfolio['equity']:,.0f} | Positions: {len(portfolio['positions'])} | Trades: {len(portfolio['trades'])}"
-        sys.stdout.write(f"\r{progress_str.ljust(100)}"); sys.stdout.flush()
+        exit_proceeds = 0
+        to_remove = []
         
-        exit_proceeds = 0; to_remove = []; todays_exits = [] 
-        for pos_id, pos in list(portfolio['positions'].items()):
-            symbol = pos['symbol']
-            if date not in stock_data[symbol].index: continue
+        # Print progress every 10 days or on last day
+        if (i + 1) % 10 == 0 or (i + 1) == total_days:
+            progress = (i + 1)/total_days * 100
+            print(f"Progress: {i+1}/{total_days} days ({progress:.1f}%) | Equity: {portfolio['equity']:,.2f}", end='\r')
+        
+        # Process exits
+        for pos_id, position in portfolio['positions'].items():
+            symbol = position['symbol']
+            if date not in stock_data[symbol].index:
+                continue
+                
             data = stock_data[symbol].loc[date]
-            if not pos['partial_exit'] and data['high'] >= pos['target']:
-                shares = pos['shares'] // 2; price = pos['target']; exit_proceeds += shares * price
-                todays_exits.append({'symbol': symbol, 'entry_date': pos['entry_date'].date(), 'exit_date': date.date(), 'entry_price': pos['entry_price'], 'pnl': (price - pos['entry_price']) * shares, 'exit_type': 'Partial Profit (1:1)', **pos})
-                pos['shares'] -= shares; pos['partial_exit'] = True; pos['stop_loss'] = pos['entry_price'] 
-            if pos['shares'] > 0 and data['low'] <= pos['stop_loss']:
-                price = pos['stop_loss']; exit_proceeds += pos['shares'] * price
-                todays_exits.append({'symbol': symbol, 'entry_date': pos['entry_date'].date(), 'exit_date': date.date(), 'entry_price': pos['entry_price'], 'pnl': (price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', **pos})
-                to_remove.append(pos_id); continue
-            if pos['shares'] > 0 and data['close'] > pos['entry_price']:
-                pos['stop_loss'] = max(pos['stop_loss'], pos['entry_price'])
-                if data['green_candle']: pos['stop_loss'] = max(pos['stop_loss'], data['low'])
-        for pos_id in to_remove: portfolio['positions'].pop(pos_id, None)
+            risk = position['entry_price'] - position['stop_loss']
+            
+            # Partial profit exit (1:1)
+            if not position['partial_exit'] and data['high'] >= position['target']:
+                sell_shares = position['shares'] // 2
+                exit_value = sell_shares * position['target']
+                exit_proceeds += exit_value
+                
+                portfolio['trades'].append({
+                    'symbol': symbol,
+                    'entry_date': position['entry_date'].date(),
+                    'exit_date': date.date(),
+                    'pnl': (position['target'] - position['entry_price']) * sell_shares,
+                    'exit_type': 'Partial Profit (1:1)'
+                })
+                
+                position['shares'] -= sell_shares
+                position['partial_exit'] = True
+            
+            # Stop loss exit
+            if position['shares'] > 0 and data['low'] <= position['stop_loss']:
+                exit_value = position['shares'] * position['stop_loss']
+                exit_proceeds += exit_value
+                
+                portfolio['trades'].append({
+                    'symbol': symbol,
+                    'entry_date': position['entry_date'].date(),
+                    'exit_date': date.date(),
+                    'pnl': (position['stop_loss'] - position['entry_price']) * position['shares'],
+                    'exit_type': 'Stop-Loss'
+                })
+                
+                to_remove.append(pos_id)
+            
+            # Update trailing stop
+            elif position['shares'] > 0 and data['close'] > position['entry_price'] and data['green_candle']:
+                position['stop_loss'] = max(position['stop_loss'], data['low'])
+        
+        # Remove exited positions
+        for pos_id in to_remove:
+            portfolio['positions'].pop(pos_id, None)
+        
+        # Store start of day values
+        start_equity = portfolio['cash']
+        for pos in portfolio['positions'].values():
+            if date in stock_data[pos['symbol']].index:
+                start_equity += pos['shares'] * stock_data[pos['symbol']].loc[date]['close']
+        
+        # Process entries with detailed capital tracking
+        for symbol, df in stock_data.items():
+            if date not in df.index:
+                continue
+                
+            # Skip if already in a position
+            if any(pos['symbol'] == symbol for pos in portfolio['positions'].values()):
+                continue
+            
+            try:
+                loc = df.index.get_loc(date)
+                if loc < 3:
+                    continue
+                
+                # Get candles
+                current = df.iloc[loc]
+                prev1 = df.iloc[loc-1]
+                
+                # Must have at least one red candle before the green
+                if not (prev1['green_candle'] and df.iloc[loc-2]['red_candle']):
+                    continue
+                
+                # Count all valid setups
+                missed_trades['valid_setups'] += 1
+                pattern_length = len(get_consecutive_red_candles(df, loc)) + 1
+                setup_stats[f'{pattern_length}R_1G'] += 1
+                
+                # EMA condition
+                if not (prev1['close'] > prev1['ema_30']):
+                    continue
+                
+                # Calculate entry price
+                red_candles = get_consecutive_red_candles(df, loc)
+                entry_price = max([c['high'] for c in red_candles] + [prev1['high']])
+                
+                # Check trigger
+                if not (current['open'] < entry_price and current['high'] >= entry_price):
+                    continue
+                
+                # Risk calculation (5-day lookback)
+                stop_loss = df.iloc[loc-5:loc]['low'].min()
+                risk = entry_price - stop_loss
+                
+                if risk <= 0:
+                    missed_trades['due_to_risk'].append({
+                        'date': date,
+                        'symbol': symbol,
+                        'reason': 'Invalid risk calculation'
+                    })
+                    continue
+                
+                # Position sizing
+                risk_capital = start_equity * (RISK_PER_TRADE_PERCENT / 100)
+                shares = math.floor(risk_capital / risk)
+                
+                if shares == 0:
+                    missed_trades['due_to_capital'].append({
+                        'date': date,
+                        'symbol': symbol,
+                        'required': entry_price * 1,
+                        'available': portfolio['cash'],
+                        'reason': 'Zero shares calculated'
+                    })
+                    continue
+                
+                if (shares * entry_price) > portfolio['cash']:
+                    missed_trades['due_to_capital'].append({
+                        'date': date,
+                        'symbol': symbol,
+                        'required': shares * entry_price,
+                        'available': portfolio['cash'],
+                        'reason': 'Insufficient capital'
+                    })
+                    # Attempt partial position
+                    shares = math.floor(portfolio['cash'] / entry_price)
+                    if shares == 0:
+                        continue
+                
+                # Execute trade
+                portfolio['cash'] -= shares * entry_price
+                portfolio['positions'][f"{symbol}_{date}"] = {
+                    'symbol': symbol,
+                    'entry_date': date,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'target': entry_price + risk,
+                    'shares': shares,
+                    'partial_exit': False
+                }
+                
+            except Exception as e:
+                print(f"\nError processing {symbol} on {date}: {str(e)}")
+        
+        # Update portfolio
         portfolio['cash'] += exit_proceeds
-        equity_after_exits = portfolio['cash']
-        for pos in portfolio['positions'].values():
-             if date in stock_data[pos['symbol']].index: equity_after_exits += pos['shares'] * stock_data[pos['symbol']].loc[date]['close']
-        portfolio['equity'] = equity_after_exits
-
-        market_uptrend = True
-        if cfg['market_regime_filter'] and date in index_df_daily.index:
-            if index_df_daily.loc[date]['close'] < index_df_daily.loc[date][f"ema_{cfg['regime_ma_period']}"]: market_uptrend = False
         
-        if market_uptrend:
-            for symbol, df in stock_data.items():
-                if any(pos['symbol'] == symbol for pos in portfolio['positions'].values()): continue
-                if date not in df.index: continue
-                try:
-                    loc = df.index.get_loc(date)
-                    if loc < max(cfg['rs_period'], 2): continue
-                    prev1 = df.iloc[loc-1]
-                    if not prev1['green_candle'] or prev1['close'] < (prev1['high'] + prev1['low']) / 2: continue
-                    if not (prev1['close'] > prev1[f"ema_{cfg['ema_period']}"]): continue
-                    if not get_consecutive_red_candles(df, loc): continue
-                    
-                    rs_ok = True
-                    if cfg['rs_filter'] and date in index_df_daily.index:
-                        stock_return = df.loc[date, 'return']
-                        index_return = index_df_daily.loc[date, 'return']
-                        if pd.isna(stock_return) or pd.isna(index_return) or (stock_return < index_return + cfg['rs_outperformance_pct']):
-                            rs_ok = False
-                    if not rs_ok: continue
-
-                    today_candle = df.iloc[loc]
-                    volume_ok = not cfg['volume_filter'] or (pd.notna(today_candle['volume_ma']) and today_candle['volume'] >= (today_candle['volume_ma'] * cfg['volume_multiplier']))
-                    atr_ok = not cfg['atr_filter'] or (pd.notna(today_candle[f"atr_{cfg['atr_period']}"]) and pd.notna(today_candle[f"atr_ma_{cfg['atr_ma_period']}"]) and today_candle[f"atr_{cfg['atr_period']}"] <= (today_candle[f"atr_ma_{cfg['atr_ma_period']}"] * cfg['atr_multiplier']))
-                    
-                    entry_trigger_price = max([c['high'] for c in get_consecutive_red_candles(df, loc)] + [prev1['high']])
-                    if volume_ok and atr_ok and today_candle['high'] >= entry_trigger_price and today_candle['open'] < entry_trigger_price:
-                        entry_price = entry_trigger_price
-                        stop_loss = df.iloc[max(0, loc - cfg['stop_loss_lookback']):loc]['low'].min()
-                        risk_per_share = entry_price - stop_loss
-                        if risk_per_share <= 0: continue
-                        equity_at_entry = portfolio['equity']
-                        shares = math.floor((equity_at_entry * (cfg['risk_per_trade_percent'] / 100)) / risk_per_share)
-                        if shares > 0 and (shares * entry_price) <= portfolio['cash']:
-                            portfolio['cash'] -= shares * entry_price
-                            portfolio['positions'][f"{symbol}_{date}"] = {'symbol': symbol, 'entry_date': date, 'entry_price': entry_price, 'stop_loss': stop_loss, 'shares': shares, 'target': entry_price + risk_per_share, 'partial_exit': False, 'portfolio_equity_on_entry': equity_at_entry, 'risk_per_share': risk_per_share, 'initial_shares': shares, 'initial_stop_loss': stop_loss}
-                        elif shares > 0:
-                            # Log the missed trade if the flag is enabled
-                            if cfg['log_missed_trades']:
-                                missed_trades_log.append({
-                                    'symbol': symbol, 'entry_date': date,
-                                    'entry_price': entry_price, 'initial_stop_loss': stop_loss,
-                                    'target': entry_price + risk_per_share
-                                })
-                except Exception: pass
-        
-        eod_equity = portfolio['cash']
+        # Calculate end of day value
+        end_value = portfolio['cash']
         for pos in portfolio['positions'].values():
-            if date in stock_data[pos['symbol']].index: eod_equity += pos['shares'] * stock_data[pos['symbol']].loc[date]['close']
-        portfolio['equity'] = eod_equity
-        portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
-        for exit_log in todays_exits:
-            exit_log['portfolio_equity_on_exit'] = portfolio['equity']
-            portfolio['trades'].append(exit_log)
-
-    print("\n\n--- BACKTEST COMPLETE ---")
-    final_equity = portfolio['equity']
-    net_pnl = final_equity - cfg['initial_capital']
-    equity_df = pd.DataFrame(portfolio['daily_values']).set_index('date')
-    if not equity_df.empty:
-        years = (equity_df.index[-1] - equity_df.index[0]).days / 365.25
-        cagr = ((final_equity / cfg['initial_capital']) ** (1 / years) - 1) * 100 if years > 0 else 0
-        peak = equity_df['equity'].cummax(); drawdown = (equity_df['equity'] - peak) / peak; max_drawdown = abs(drawdown.min()) * 100
-    else: cagr, max_drawdown = 0, 0
+            if date in stock_data[pos['symbol']].index:
+                end_value += pos['shares'] * stock_data[pos['symbol']].loc[date]['close']
+        
+        portfolio['equity'] = end_value
+        portfolio['daily_values'].append(end_value)
+    
+    # Calculate performance metrics
+    years = (all_dates[-1] - all_dates[0]).days / 365.25
+    cagr = (portfolio['equity']/INITIAL_CAPITAL)**(1/years) - 1
+    metrics = calculate_metrics(portfolio['trades'])
+    total_trades = len(portfolio['trades'])
+    taken_rate = total_trades/missed_trades['valid_setups'] if missed_trades['valid_setups'] else 0
+    
+    # Print final results to console
+    print("\n\nBacktest Complete!")
+    print("=================")
+    print(f"Duration: {time.time()-start_time:.2f} seconds")
+    print(f"Final Equity: {portfolio['equity']:,.2f}")
+    print(f"CAGR: {cagr:.2%}")
+    print(f"Total Trades: {total_trades}")
+    print(f"Valid Setups: {missed_trades['valid_setups']}")
+    print(f"Missed Due to Capital: {len(missed_trades['due_to_capital'])}")
+    print(f"Win Rate: {metrics['win_rate']:.1%}")
+    print(f"Profit Factor: {metrics['profit_factor']:.2f}")
+    
+    # Save detailed reports
     trades_df = pd.DataFrame(portfolio['trades'])
-    total_trades, win_rate, profit_factor, avg_win, avg_loss = 0, 0, 0, 0, 0
-    if not trades_df.empty:
-        winning_trades = trades_df[trades_df['pnl'] > 0]; losing_trades = trades_df[trades_df['pnl'] <= 0]
-        total_trades = len(trades_df)
-        win_rate = (len(winning_trades) / total_trades) * 100 if total_trades > 0 else 0
-        gross_profit = winning_trades['pnl'].sum(); gross_loss = abs(losing_trades['pnl'].sum())
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-        avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0
-        avg_loss = abs(losing_trades['pnl'].mean()) if len(losing_trades) > 0 else 0
-
-    summary_content = f"""BACKTEST SUMMARY REPORT
-================================
-INPUT PARAMETERS:
------------------
-Timeframe: {cfg['timeframe']}
-Start Date: {cfg['start_date']}
-End Date: {cfg['end_date']}
-Initial Capital: {cfg['initial_capital']:,.2f}
-Risk Per Trade: {cfg['risk_per_trade_percent']:.1f}%
-EMA Period: {cfg['ema_period']}
-Stop Loss Lookback: {cfg['stop_loss_lookback']} days
-Market Regime Filter: {'Enabled' if cfg['market_regime_filter'] else 'Disabled'}
-Volume Filter: {'Enabled' if cfg['volume_filter'] else 'Disabled'}
-ATR Filter: {'Enabled' if cfg['atr_filter'] else 'Disabled'}
-Relative Strength Filter: {'Enabled (vs NIFTY200)' if cfg['rs_filter'] else 'Disabled'}
-
-PERFORMANCE METRICS:
---------------------
-Final Equity: {final_equity:,.2f}
-Net P&L: {net_pnl:,.2f}
-CAGR: {cagr:.2f}%
-Max Drawdown: {max_drawdown:.1f}%
-
-TRADE STATISTICS:
------------------
-Total Trade Events (incl. partials): {total_trades}
-Win Rate (of events): {win_rate:.1f}%
-Profit Factor: {profit_factor:.2f}
-Average Winning Event: {avg_win:,.2f}
-Average Losing Event: {avg_loss:,.2f}
-Missed Trades (Capital): {len(missed_trades_log)}
-"""
+    trades_df.to_csv(
+        os.path.join(LOG_FOLDER, f"{timestamp}_trades_detail.csv"), 
+        index=False
+    )
+    pd.DataFrame(missed_trades['due_to_capital']).to_csv(
+        os.path.join(LOG_FOLDER, f"{timestamp}_missed_trades_capital.csv"),
+        index=False
+    )
     
-    summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report.txt")
-    trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail.csv")
-    missed_trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_missed_trades_log.csv")
-    
-    with open(summary_filename, 'w') as f: f.write(summary_content)
-    
-    log_columns = ['symbol', 'entry_date', 'exit_date', 'entry_price', 'pnl', 'exit_type', 'portfolio_equity_on_entry', 'portfolio_equity_on_exit', 'risk_per_share', 'initial_shares', 'initial_stop_loss']
-    if not trades_df.empty:
-        trades_df = trades_df.reindex(columns=log_columns)
-        trades_df.to_csv(trades_filename, index=False)
-    else:
-        with open(trades_filename, 'w') as f: f.write(",".join(log_columns) + "\n")
+    # Save summary report with strategy config
+    with open(os.path.join(LOG_FOLDER, f"{timestamp}_summary_report.txt"), 'w') as f:
+        f.write("STRATEGY CONFIGURATION\n")
+        f.write("======================\n")
+        f.write(f"Initial Capital: {INITIAL_CAPITAL:,.2f}\n")
+        f.write(f"Risk Per Trade: {RISK_PER_TRADE_PERCENT}%\n")
+        f.write(f"EMA Period: 30\n")
+        f.write(f"Stop Loss Lookback: 5 days\n")
+        f.write(f"Partial Profit: 50% at 1:1 R:R\n")
+        f.write(f"Trailing Stop: On green candles\n\n")
         
-    if cfg['log_missed_trades'] and missed_trades_log:
-        missed_trades_df = pd.DataFrame(missed_trades_log)
-        missed_trades_df.to_csv(missed_trades_filename, index=False)
-
-    print(summary_content)
-    print(f"Backtest completed in {time.time()-start_time:.2f} seconds")
-    print(f"Reports saved to '{cfg['log_folder']}'")
+        f.write("PERFORMANCE METRICS\n")
+        f.write("===================\n")
+        f.write(f"Final Equity: {portfolio['equity']:,.2f}\n")
+        f.write(f"Net P&L: {portfolio['equity'] - INITIAL_CAPITAL:,.2f}\n")
+        f.write(f"CAGR: {cagr:.2%}\n")
+        f.write(f"Total Days: {len(all_dates)}\n")
+        f.write(f"Valid Setups: {missed_trades['valid_setups']}\n")
+        f.write(f"Trades Taken: {total_trades}\n")
+        f.write(f"Execution Rate: {taken_rate:.1%}\n")
+        f.write(f"Win Rate: {metrics['win_rate']:.1%}\n")
+        f.write(f"Profit Factor: {metrics['profit_factor']:.2f}\n")
+        f.write(f"Avg Win: {metrics['avg_win']:,.2f}\n")
+        f.write(f"Avg Loss: {metrics['avg_loss']:,.2f}\n")
+        f.write(f"Max Drawdown: {metrics['max_drawdown']:.1%}\n\n")
+        
+        f.write("MISSED TRADE ANALYSIS\n")
+        f.write("=====================\n")
+        f.write(f"Due to Capital: {len(missed_trades['due_to_capital'])}\n")
+        if missed_trades['due_to_capital']:
+            avg_shortfall = sum(t['required']-t['available'] for t in missed_trades['due_to_capital'])/len(missed_trades['due_to_capital'])
+            f.write(f"Avg Capital Shortfall: {avg_shortfall:,.2f}\n")
+        f.write(f"Due to Risk: {len(missed_trades['due_to_risk'])}\n\n")
+        
+        f.write("PATTERN STATISTICS\n")
+        f.write("==================\n")
+        for pattern, count in sorted(setup_stats.items()):
+            f.write(f"{pattern}: {count} ({count/missed_trades['valid_setups']:.1%})\n")
 
 if __name__ == "__main__":
-    run_backtest(config)
+    main()

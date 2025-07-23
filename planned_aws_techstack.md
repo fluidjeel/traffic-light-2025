@@ -2,7 +2,7 @@ Recommended AWS Tech Stack for Strategy Automation
 This document outlines a cost-effective, reliable, and low-maintenance technology stack on Amazon Web Services (AWS) for automating your Python-based trading strategy.
 
 1. The Recommended Tech Stack
-The core principle is to use a "serverless" approach, which means you don't have to manage any virtual machines. AWS handles the underlying infrastructure, and you only pay for the execution time of your scripts.
+The core principle is to use a "serverless" architecture, which means you don't have to manage any virtual machines. AWS handles the underlying infrastructure, and you only pay for the execution time of your scripts.
 
 Component
 

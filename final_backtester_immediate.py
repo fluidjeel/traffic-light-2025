@@ -9,7 +9,7 @@ import sys
 config = {
     'initial_capital': 1000000,
     'risk_per_trade_percent': 4.0,
-    'timeframe': 'weekly-immediate', 
+    'timeframe': 'monthly-immediate', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
