@@ -1,105 +1,67 @@
-Project Code Explained: A Detailed Guide
-Objective: This document provides a detailed, beginner-friendly explanation of the Python scripts that make up your algorithmic trading project. It covers what each script does, how the code works, and why it's structured the way it is (programming best practices).
+Project Code Explained
+This document provides a functional overview of the key Python scripts in the Nifty 200 Pullback Strategy project.
 
-Part 1: The Overall Workflow
-Before diving into the individual scripts, it's important to understand the project's overall data pipeline. The system works like an assembly line:
+1. Data Pipeline Scripts
+These scripts are responsible for acquiring and preparing all the data needed for backtesting.
 
-Data Acquisition: The fyers scraper scripts act as the first step, collecting the raw materials (raw price and index data) from the Fyers API.
+fyers_equity_scraper.py & fyers_equity_scraper_15min.py
+Purpose: These are the primary data acquisition tools. They connect to the Fyers API to download historical price data for all stocks listed in nifty200.csv.
 
-Data Processing: The calculate_indicators.py script is the next station. It takes the raw data, cleans it, resamples it into different timeframes, and adds the necessary technical indicators (like moving averages and ATR).
+Logic:
 
-Strategy Simulation: The final_backtester.py and final_backtester_immediate.py scripts are the final stations. They take the processed, indicator-rich data and run the trading strategy simulation, producing the final performance reports.
+They handle the Fyers API authentication process.
 
-Post-Hoc Analysis: The analyze_missed_trades.py script is an optional final step to analyze the performance of trades that were identified but not taken due to capital constraints.
+They intelligently manage downloads, fetching only new data since the last run (incremental update) or performing a full historical download if no data exists.
 
-Part 2: Script-by-Script Breakdown
-A. fyers_equity_scraper.py & fyers_nifty200_index_scraper.py
-1. Functional Purpose:
+To respect API limits, they download data in batches (6 months for daily, 90 days for 15-min).
 
-What they do: These scripts are your data collectors. Their only job is to connect to the Fyers API and download historical daily price data (Open, High, Low, Close, Volume) for the stocks and indices you need. The equity scraper downloads data for all stocks in your nifty200.csv list, while the index scraper is a specialized version for downloading the Nifty 200 index data.
+The ..._15min.py version is specifically configured to fetch 15-minute candles and save them to a separate historical_data_15min/ directory.
 
-2. Key Code Sections Explained:
+fyers_nifty200_index_scraper_15min.py
+Purpose: This is a specialized scraper dedicated to downloading 15-minute data for the Nifty 200 index, which is required for the hybrid model's real-time market filters.
 
-get_access_token() function:
+Logic: It functions identically to the 15-minute equity scraper but is hardcoded to fetch data only for the NSE:NIFTY200-INDEX symbol.
 
-Functional: This part handles the login and authentication with Fyers. It's smart enough to first check for a saved access token in fyers_access_token.txt. If it finds one, it uses it. If not, it prompts you to go through the manual login process to get a new one.
+calculate_indicators_clean.py
+Purpose: This is the definitive data processing engine. It takes the raw daily data and creates the clean, indicator-rich files used by the backtesters for strategic analysis.
 
-Best Practice: Separating authentication into its own function makes the code clean and reusable. Checking for a saved token is efficient, as it avoids the need to log in manually every single time you run the script.
+Logic:
 
-get_historical_data() function:
+It reads the raw daily CSVs from the historical_data/ folder.
 
-Functional: This is the core data-fetching function. It takes a symbol (e.g., "NSE:RELIANCE-EQ") and a date range and asks the Fyers API for the data.
+It calculates all necessary indicators for the daily timeframe (e.g., ema_30, ema_50, volume_20_sma, return_30).
 
-Best Practice: It includes a retry mechanism. If the API fails to respond (which can happen due to temporary network issues), the script doesn't just crash. It waits a few seconds and tries again, making it much more robust and reliable for downloading large amounts of data.
+It then aggregates the daily data upwards to create the 2-Day, Weekly, and Monthly candles, ensuring all timeframes are perfectly synchronized. It correctly handles the Monday-Friday weekly aggregation.
 
-The Main Execution Block (if __name__ == "__main__":)
+It calculates indicators for these higher timeframes.
 
-Functional: This is the part of the script that runs when you execute it. It reads your nifty200.csv file to get the list of stocks, then loops through each one. For each stock, it intelligently figures out if it needs to download all historical data or just the new data since the last run. It downloads the data in 6-month batches to respect API limits.
+It saves all processed files with correct, descriptive names (e.g., ABB_weekly_with_indicators.csv) to the data/processed/ directory.
 
-Best Practice: The logic to check for existing files and only download new data is called incremental updating. This is extremely efficient and saves a huge amount of time and API calls compared to re-downloading everything every time.
+2. Backtesting Engine Scripts
+These scripts run the trading simulations and generate performance reports.
 
-B. calculate_indicators.py
-1. Functional Purpose:
+final_backtester_benchmark_logger.py
+Purpose: This script's sole function is to generate our "Golden Benchmark." It runs the original, flawed strategy with lookahead bias.
 
-What it does: This script is your data processor. It takes the raw data from the scrapers and prepares it for the backtester. It does two main things: resamples the data into different timeframes and calculates technical indicators.
+Logic:
 
-2. Key Code Sections Explained:
+It simulates an intraday entry on Day T.
 
-main() function - Resampling Logic:
+The Flaw: It confirms the entry using filters (Volume, RS, Market Regime) based on the final, end-of-day data from Day T, giving it an impossible "crystal ball" advantage.
 
-Functional: It defines a dictionary called timeframes that tells the script how to convert daily data into 2-day, weekly, and monthly data. It uses the powerful pandas library (the standard for data analysis in Python) to perform this resampling automatically.
+Enhanced Logging: It generates a comprehensive _all_setups_log.csv file, logging every single "perfect" setup it finds. For trades missed due to capital, it runs a hypothetical simulation to determine their outcome, providing a complete picture of the strategy's unconstrained potential.
 
-Best Practice: Using a configuration dictionary (timeframes) makes the code easy to read and modify. If you wanted to add a "3-day" timeframe, you would only need to add one line to this dictionary.
+final_backtester_v8_hybrid_optimized.py
+Purpose: This is the current state-of-the-art, realistic backtesting engine, free of lookahead bias. It is the primary tool for current research.
 
-Indicator Calculation Section:
+Logic (Hybrid Model):
 
-Functional: For each timeframe of each stock, it calculates several technical indicators and adds them as new columns to the data file.
+Pre-Market (T-1 Data): It first scans the processed daily charts to identify all stocks that had a valid price action setup on the previous day (T-1). This generates a "watchlist."
 
-df['ema_30'] = ...: Calculates the 30-period Exponential Moving Average.
+Intraday Scan (T Day Data): It then loops through the raw 15-minute candles of the current day (T) for stocks on the watchlist.
 
-df['atr_14'] = calculate_atr(...): Calls a helper function to calculate the 14-period Average True Range.
+Execution: A trade is entered at the close of the first 15-minute candle where all real-time filters (Volume Velocity, Intraday Market Strength, etc.) are met, provided the price is within a predefined slippage limit.
 
-Best Practice: The calculations are performed using built-in, highly optimized functions from the pandas library (.ewm(), .rolling()). This is much faster and more reliable than trying to write the mathematical formulas from scratch.
+Trade Management: All exits (stop-loss, profit target, trailing stop) are managed according to the universal rules defined in the Master Prompt.
 
-C. final_backtester.py & final_backtester_immediate.py
-1. Functional Purpose:
-
-What they do: These are the heart of the project. They are the simulation engines that take the processed data and apply your trading strategy rules day by day, trade by trade. The standard backtester works on completed candles (e.g., end-of-week), while the "immediate" version uses a more complex logic to enter trades during the formation of a candle.
-
-2. Key Code Sections Explained:
-
-config Dictionary:
-
-Functional: This dictionary at the top of the script holds all the key parameters for your strategy (initial capital, risk per trade, which filters to use, etc.).
-
-Best Practice: This is a critical design choice. It allows you to change how the strategy runs without having to dig into the code. To test a different risk level, you just change one number in the config. This makes optimization and research much easier and less error-prone.
-
-Data Loading Section:
-
-Functional: This section loads all the necessary data into memory before the simulation starts: the individual stock data for the chosen timeframe, and the daily Nifty 200 index data for the filters.
-
-Best Practice: Loading all data upfront is more efficient than reading from the disk on every single day of the backtest loop.
-
-The Main Backtest Loop (for i, date in enumerate(all_dates):)
-
-Functional: This is the engine's main "heartbeat." It iterates through every single day (or period) in your chosen date range. Inside this loop, all the strategy's logic happens in a strict order for each day:
-
-Exits are processed first: It checks all open positions to see if any stop-losses or profit targets were hit.
-
-Equity is updated: It recalculates the total portfolio value after any exits.
-
-Entries are processed last: It then applies all the filters (Market Regime, Volume, etc.) and scans for new trade setups.
-
-Best Practice: This sequence (Exits -> Equity Update -> Entries) is crucial for a realistic simulation. It ensures that the capital from a closed trade is available for a new trade on the same day and that the risk for a new trade is based on the most up-to-date portfolio value.
-
-Filter Logic (if market_uptrend: ... if volume_ok: ...)
-
-Functional: This series of if statements acts as a "gauntlet." A potential trade setup must pass through each of these checks sequentially. If it fails any one of them (e.g., the volume is too low), the script immediately continues to the next stock, and no trade is placed.
-
-Best Practice: This is a clean and readable way to implement a multi-stage filtering process. The use of boolean flags (market_uptrend, volume_ok) makes the final entry condition (if volume_ok and atr_ok and ...) very easy to understand.
-
-Reporting Section:
-
-Functional: After the main loop is finished, this section calculates all the final performance metrics (CAGR, Max Drawdown, Profit Factor, etc.) and formats them into the summary_report.txt file.
-
-Best Practice: Separating the simulation logic from the final reporting makes the code much cleaner. The use of f-strings (f"CAGR: {cagr:.2f}%") is the modern and preferred way to format strings in Python.
+Reporting: It generates a full suite of reports, including a summary, a detailed log of filled trades, and a comprehensive log of all setups identified (both filled and missed).
