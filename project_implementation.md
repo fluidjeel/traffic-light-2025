@@ -1,79 +1,67 @@
-Project Context & Implementation Details for LLM Analysis
-Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. The goal is for an LLM to fully understand the project's architecture, data flow, and the precise logic of the two distinct trading strategies to assist with future modifications, bug fixes, or the addition of new features.
+Project Code Explained
+This document provides a functional overview of the key Python scripts in the Nifty 200 Pullback Strategy project.
 
-1. High-Level Project Goal
-The primary objective is to develop, backtest, and refine a profitable, long-only, pullback-based swing trading strategy. The strategy is applied to the universe of stocks within India's Nifty 200 index. The project consists of a full pipeline of scripts for data acquisition, data processing across multiple timeframes, and two separate, robust, event-driven backtesting engines for standard and accelerated entries.
+1. Data Pipeline Scripts
+These scripts are responsible for acquiring and preparing all the data needed for backtesting.
 
-2. System Architecture and Workflow
-The project is a modular system composed of several Python scripts that work in sequence:
+fyers_equity_scraper.py & fyers_equity_scraper_15min.py
+Purpose: These are the primary data acquisition tools. They connect to the Fyers API to download historical price data for all stocks listed in nifty200.csv.
 
-Data Acquisition (fyers_..._scraper.py scripts): These scripts connect to the Fyers API to download and maintain a local database of daily historical stock and index data.
+Logic:
 
-Indicator Calculation (calculate_indicators.py): This script processes the raw daily data. It first resamples the data into multiple timeframes (daily, 2-day, weekly, monthly) and then calculates and adds a suite of technical indicators (ema_30, ema_50, atr_14, atr_ma_30, etc.) to each data file. The outputs are saved into separate directories for each timeframe (e.g., data/processed/daily/).
+They handle the Fyers API authentication process.
 
-Backtesting Engines: The project now utilizes two distinct backtesters for different strategic approaches:
+They intelligently manage downloads, fetching only new data since the last run (incremental update) or performing a full historical download if no data exists.
 
-final_backtester.py: This is the engine for standard, end-of-period strategies. It operates on a fixed timeframe (e.g., daily, weekly) and makes all entry decisions based on completed candles for that timeframe.
+To respect API limits, they download data in batches (6 months for daily, 90 days for 15-min).
 
-final_backtester_immediate.py: This is the specialized engine for accelerated, "fast entry" strategies. It uses a hybrid model where the setup is identified on a higher timeframe (weekly or monthly), but the entry trigger is scanned for and executed on a daily basis.
+The ..._15min.py version is specifically configured to fetch 15-minute candles and save them to a separate historical_data_15min/ directory.
 
-Post-Hoc Analysis (analyze_missed_trades.py): This script is run after a backtest to analyze the performance of trades that were identified but could not be taken due to capital constraints.
+fyers_nifty200_index_scraper_15min.py
+Purpose: This is a specialized scraper dedicated to downloading 15-minute data for the Nifty 200 index, which is required for the hybrid model's real-time market filters.
 
-3. Core Trading Strategy Routines
-The following describes the routines implemented in the two backtesting scripts.
+Logic: It functions identically to the 15-minute equity scraper but is hardcoded to fetch data only for the NSE:NIFTY200-INDEX symbol.
 
-A. Standard Strategy (final_backtester.py)
-Timeframes: daily, 2day, weekly, monthly.
+calculate_indicators_clean.py
+Purpose: This is the definitive data processing engine. It takes the raw daily data and creates the clean, indicator-rich files used by the backtesters for strategic analysis.
 
-Entry Logic (End-of-Period): A trade is only considered on the closing day of a period (e.g., on Friday for a weekly timeframe). The entry decision is based on the pattern formed by the completed candles of that timeframe.
+Logic:
 
-Exit Logic: Exits are checked daily against the stop-loss defined by the higher timeframe's entry conditions, providing a more realistic simulation of a live stop order.
+It reads the raw daily CSVs from the historical_data/ folder.
 
-B. Immediate Entry Strategy (final_backtester_immediate.py)
-Timeframes: weekly-immediate, monthly-immediate.
+It calculates all necessary indicators for the daily timeframe (e.g., ema_30, ema_50, volume_20_sma, return_30).
 
-Core Principle: To enter a trade as early as possible within a forming weekly or monthly candle, rather than waiting for it to close.
+It then aggregates the daily data upwards to create the 2-Day, Weekly, and Monthly candles, ensuring all timeframes are perfectly synchronized. It correctly handles the Monday-Friday weekly aggregation.
 
-Entry Logic (Hybrid Timeframe):
+It calculates indicators for these higher timeframes.
 
-HTF Setup: The script identifies a valid setup pattern on the completed higher-timeframe (HTF) charts (e.g., last week's candles). The setup requires one or more consecutive red HTF candles followed by a single bullish green HTF candle that closed above its 30-period EMA.
+It saves all processed files with correct, descriptive names (e.g., ABB_weekly_with_indicators.csv) to the data/processed/ directory.
 
-Fast Entry Trigger Price: The trigger price is calculated as the highest high of the completed red HTF candles only.
+2. Backtesting Engine Scripts
+These scripts run the trading simulations and generate performance reports.
 
-Daily Scan: The script's main loop runs daily. On each day of the current, forming HTF candle (e.g., on Monday, Tuesday, etc., of the current week), it checks the daily price action.
+final_backtester_benchmark_logger.py
+Purpose: This script's sole function is to generate our "Golden Benchmark." It runs the original, flawed strategy with lookahead bias.
 
-Execution: A trade is entered on the first day that the daily high crosses above the "Fast Entry Trigger Price," provided it has not already been breached on a previous day within the current HTF period.
+Logic:
 
-Filter Application: All filters (Volume, Relative Strength) are applied using the daily data at the moment of the potential entry.
+It simulates an intraday entry on Day T.
 
-Risk Calculation: The initial stop-loss is calculated using a lookback on the daily chart, making the risk definition more granular.
+The Flaw: It confirms the entry using filters (Volume, RS, Market Regime) based on the final, end-of-day data from Day T, giving it an impossible "crystal ball" advantage.
 
-Exit Logic: Exits are managed on a daily basis, identical to the standard backtester.
+Enhanced Logging: It generates a comprehensive _all_setups_log.csv file, logging every single "perfect" setup it finds. For trades missed due to capital, it runs a hypothetical simulation to determine their outcome, providing a complete picture of the strategy's unconstrained potential.
 
-C. Universal Rules (Apply to Both Backtesters)
-Entry Filters (Applied Sequentially):
+final_backtester_v8_hybrid_optimized.py
+Purpose: This is the current state-of-the-art, realistic backtesting engine, free of lookahead bias. It is the primary tool for current research.
 
-Market Regime Filter: Prevents new long positions if the daily Nifty 200 index is below its 50-day EMA.
+Logic (Hybrid Model):
 
-Relative Strength Filter: Requires a stock's 30-day return to be greater than the Nifty 200's 30-day return.
+Pre-Market (T-1 Data): It first scans the processed daily charts to identify all stocks that had a valid price action setup on the previous day (T-1). This generates a "watchlist."
 
-Volume Filter: Requires the entry day's volume to be at least 1.3x its 20-day average.
+Intraday Scan (T Day Data): It then loops through the raw 15-minute candles of the current day (T) for stocks on the watchlist.
 
-ATR Filter: (Implemented but disabled) Rejects trades if volatility is too high.
+Execution: A trade is entered at the close of the first 15-minute candle where all real-time filters (Volume Velocity, Intraday Market Strength, etc.) are met, provided the price is within a predefined slippage limit.
 
-Position Sizing: Risks a fixed percentage of the current total portfolio equity on each trade. Equity is recalculated after exits but before new entries.
+Trade Management: All exits (stop-loss, profit target, trailing stop) are managed according to the universal rules defined in the Master Prompt.
 
-Trade Management (Two-Leg Exit Strategy):
-
-Leg 1 (Partial Profit): 50% of the position is sold at a 1:1 risk/reward target. The stop-loss is then moved to breakeven.
-
-Leg 2 (Trailing Stop): For any profitable trade, the stop-loss is trailed daily to the higher of breakeven or the low of the most recent green candle.
-
-Final Exit: The entire remaining position is closed if the price hits the current stop-loss level.
-
-4. Data and File System Structure
-Input Data: Raw data is in historical_data/. Processed data is in data/processed/, subdivided by timeframe (e.g., data/processed/daily/).
-
-Filenames: Stock data is named {SYMBOL}_daily_with_indicators.csv. Index data is named NIFTY200_INDEX_daily_with_indicators.csv.
-
-Output: Results are saved to backtest_logs/, including a .txt summary and a .csv detailed trade log, both prefixed with a timestamp. A log of missed trades is also generated if enabled.
+Reporting: It generates a full suite of reports, including a summary, a detailed log of filled trades, and a comprehensive log of all setups identified (both filled and missed).
