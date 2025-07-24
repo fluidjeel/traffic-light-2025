@@ -1,67 +1,75 @@
-Project Code Explained
-This document provides a functional overview of the key Python scripts in the Nifty 200 Pullback Strategy project.
+Master Project Context Prompt: Nifty 200 Pullback Strategy (Updated)
+Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. The goal is for you, the LLM, to fully understand the project's current architecture, its development history, the core research challenge it faces, and the logic of its key backtesting models. Do not assume any prior knowledge; this document is the single source of truth.
 
-1. Data Pipeline Scripts
-These scripts are responsible for acquiring and preparing all the data needed for backtesting.
+1. High-Level Project Goal & Status
+1.1. Goal:
+The project's objective is to develop, backtest, and ultimately automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge. The target is to achieve a high CAGR while maintaining acceptable drawdown levels.
 
-fyers_equity_scraper.py & fyers_equity_scraper_15min.py
-Purpose: These are the primary data acquisition tools. They connect to the Fyers API to download historical price data for all stocks listed in nifty200.csv.
+1.2. Current Status:
+The project is in a highly advanced research and development phase. The initial development led to the discovery of a critical lookahead bias in the original backtesting model, which produced unrealistically high returns.
 
-Logic:
+The project has since pivoted to a more rigorous, professional approach. The current focus is on building and validating a realistic Hybrid Intraday Model (final_backtester_v8_hybrid_optimized.py) that is free of lookahead bias, and analyzing its performance against a "perfect" (but flawed) benchmark to quantify the true cost of real-world execution.
 
-They handle the Fyers API authentication process.
+2. The Core Research Challenge: Lookahead Bias vs. Reality
+The central theme of this project's development is the journey from a flawed backtest to a realistic one.
 
-They intelligently manage downloads, fetching only new data since the last run (incremental update) or performing a full historical download if no data exists.
+The Flawed Model ("Golden Benchmark"): The original backtester made entry decisions intraday (Day T) but used filter data (total daily volume, daily closing prices) that was only available at the end of Day T. This "crystal ball" gave it an impossible advantage, resulting in an exceptionally high CAGR (~50-60%). We now use a dedicated script (final_backtester_benchmark_logger.py) to run this flawed logic intentionally, creating a "perfect" trade log that serves as our Golden Benchmark.
 
-To respect API limits, they download data in batches (6 months for daily, 90 days for 15-min).
+The Realistic Model (Hybrid Intraday): The current state-of-the-art model (final_backtester_v8_hybrid_optimized.py) was built to eliminate this bias. It attempts to capture the same setups identified by the benchmark, but by using a realistic, hybrid daily/intraday approach that relies only on information available at the moment of a trade decision.
 
-The ..._15min.py version is specifically configured to fetch 15-minute candles and save them to a separate historical_data_15min/ directory.
+The primary research task is to analyze the performance gap between the Golden Benchmark and the Realistic Model and to enhance the Realistic Model to bridge this gap through intelligent, data-driven improvements.
 
-fyers_nifty200_index_scraper_15min.py
-Purpose: This is a specialized scraper dedicated to downloading 15-minute data for the Nifty 200 index, which is required for the hybrid model's real-time market filters.
+3. System Architecture & Script Workflow
+The project is a modular data pipeline. The current key scripts are:
 
-Logic: It functions identically to the 15-minute equity scraper but is hardcoded to fetch data only for the NSE:NIFTY200-INDEX symbol.
+3.1. Data Pipeline:
 
-calculate_indicators_clean.py
-Purpose: This is the definitive data processing engine. It takes the raw daily data and creates the clean, indicator-rich files used by the backtesters for strategic analysis.
+Data Scrapers: fyers_equity_scraper.py (for daily data), fyers_equity_scraper_15min.py (for intraday equity data), and fyers_nifty200_index_scraper_15min.py (for intraday index data).
 
-Logic:
+Indicator Calculator (calculate_indicators_clean.py): The definitive data processing engine. It takes raw daily data, aggregates it into all required timeframes (2-day, weekly, monthly), correctly calculates all necessary indicators (EMAs, RS, etc.), and saves the clean, processed files.
 
-It reads the raw daily CSVs from the historical_data/ folder.
+3.2. Backtesting Engines:
 
-It calculates all necessary indicators for the daily timeframe (e.g., ema_30, ema_50, volume_20_sma, return_30).
+Benchmark Logger (final_backtester_benchmark_logger.py): Runs the original, flawed strategy with lookahead bias. Its sole purpose is to generate the "Golden Benchmark" log file (_all_setups_log.csv), which contains every "perfect" trade the system could find with future knowledge. It also tracks the hypothetical PnL of every setup.
 
-It then aggregates the daily data upwards to create the 2-Day, Weekly, and Monthly candles, ensuring all timeframes are perfectly synchronized. It correctly handles the Monday-Friday weekly aggregation.
+Hybrid Backtester (final_backtester_v8_hybrid_optimized.py): The current, most advanced, and realistic backtesting engine. It is the primary tool for current research.
 
-It calculates indicators for these higher timeframes.
+4. Core Trading Logic: A Tale of Two Models
+4.1. Universal Trade Management (Applies to Both Models):
+The exit logic is consistent across all models to ensure a fair comparison.
 
-It saves all processed files with correct, descriptive names (e.g., ABB_weekly_with_indicators.csv) to the data/processed/ directory.
+Initial Stop-Loss: The lowest low of the 5 daily candles preceding the entry day.
 
-2. Backtesting Engine Scripts
-These scripts run the trading simulations and generate performance reports.
+Two-Leg Exit Strategy:
 
-final_backtester_benchmark_logger.py
-Purpose: This script's sole function is to generate our "Golden Benchmark." It runs the original, flawed strategy with lookahead bias.
+Leg 1 (Partial Profit): 50% of the position is sold at a 1:1 risk/reward target.
 
-Logic:
+Move to Breakeven: The stop-loss for the remaining shares is moved to the entry price.
 
-It simulates an intraday entry on Day T.
+Leg 2 (Trailing Stop): The stop is trailed daily to the higher of the breakeven price or the low of the most recent green daily candle.
 
-The Flaw: It confirms the entry using filters (Volume, RS, Market Regime) based on the final, end-of-day data from Day T, giving it an impossible "crystal ball" advantage.
+4.2. "Golden Benchmark" Entry Logic (Lookahead Bias):
 
-Enhanced Logging: It generates a comprehensive _all_setups_log.csv file, logging every single "perfect" setup it finds. For trades missed due to capital, it runs a hypothetical simulation to determine their outcome, providing a complete picture of the strategy's unconstrained potential.
+Timeframe: Daily.
 
-final_backtester_v8_hybrid_optimized.py
-Purpose: This is the current state-of-the-art, realistic backtesting engine, free of lookahead bias. It is the primary tool for current research.
+Setup: On Day T, it identifies a price action pattern (red candles + green candle) that completed on the previous day (T-1).
 
-Logic (Hybrid Model):
+Execution: It checks if the price on Day T broke out above the trigger price.
 
-Pre-Market (T-1 Data): It first scans the processed daily charts to identify all stocks that had a valid price action setup on the previous day (T-1). This generates a "watchlist."
+The Flaw: It then confirms this breakout by checking filters (Market Regime, Volume, RS) using the final, end-of-day data from Day T.
 
-Intraday Scan (T Day Data): It then loops through the raw 15-minute candles of the current day (T) for stocks on the watchlist.
+4.3. "Hybrid Intraday" Entry Logic (Realistic):
+This model uses a hybrid daily/intraday approach to avoid lookahead bias.
 
-Execution: A trade is entered at the close of the first 15-minute candle where all real-time filters (Volume Velocity, Intraday Market Strength, etc.) are met, provided the price is within a predefined slippage limit.
+Strategic Setup (Daily): At the start of each day, it scans the completed daily chart from the previous day (T-1) to find the price action setup. This generates a "watchlist" for the day.
 
-Trade Management: All exits (stop-loss, profit target, trailing stop) are managed according to the universal rules defined in the Master Prompt.
+Tactical Execution (15-Minute Chart): It then loops through the 15-minute candles of the current day for stocks on the watchlist.
 
-Reporting: It generates a full suite of reports, including a summary, a detailed log of filled trades, and a comprehensive log of all setups identified (both filled and missed).
+Confirmation & Entry: A trade is entered at the close of the first 15-minute candle where all the filter conditions (Volume Velocity, Intraday Market Strength, etc.) have been met in real-time, provided the price has not run away beyond a predefined slippage limit.
+
+5. Future Vision: Drawdown Control & Agentic AI
+The current research focus is on improving the performance of the realistic Hybrid Model. The next planned steps are:
+
+Drawdown Control: Implementing risk management layers (e.g., limiting the number of open positions, dynamic risk allocation) to control the strategy's drawdowns.
+
+Agentic AI: Exploring the use of LLMs and agentic frameworks to enhance the strategy with more dynamic, intelligent decision-making (e.g., catalyst scanning, adaptive trade management).
