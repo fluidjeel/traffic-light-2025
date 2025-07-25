@@ -1,3 +1,14 @@
+# final_backtester_immediate_benchmark_htf.py
+#
+# Description:
+# This is a modified version of the original lookahead-bias script, specifically
+# adapted to generate a "Golden Benchmark" for the HTF-immediate strategy.
+#
+# MODIFICATION:
+# 1. Updated all file paths and column name references to align with the
+#    current project data structure (output from calculate_indicators_clean.py).
+# 2. Preserved the core lookahead bias logic for benchmark generation.
+
 import pandas as pd
 import os
 import math
@@ -9,7 +20,7 @@ import sys
 config = {
     'initial_capital': 1000000,
     'risk_per_trade_percent': 4.0,
-    'timeframe': 'monthly-immediate', 
+    'timeframe': 'weekly-immediate', # Options: 'weekly-immediate', 'monthly-immediate'
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
@@ -17,28 +28,18 @@ config = {
     'nifty_list_csv': 'nifty200.csv',
     'ema_period': 30,
     'stop_loss_lookback': 5,
-    # --- FILTERS ---
+    # --- FILTERS (Lookahead Bias Preserved) ---
     'market_regime_filter': True,
-    'regime_index_symbol': 'NIFTY200',
+    'regime_index_symbol': 'NIFTY200_INDEX',
     'regime_ma_period': 50,
     'volume_filter': True,
     'volume_ma_period': 20,
     'volume_multiplier': 1.3,
     'rs_filter': True,
-    'rs_index_symbol': 'NIFTY200',
+    'rs_index_symbol': 'NIFTY200_INDEX',
     'rs_period': 30,
-    # --- NEW: Missed Trade Analysis ---
     'log_missed_trades': True
 }
-
-
-def parse_datetime(dt_str):
-    formats = ['%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M', '%Y-%m-%d']
-    for fmt in formats:
-        try: return datetime.strptime(dt_str, fmt)
-        except ValueError: continue
-    try: return pd.to_datetime(dt_str).to_pydatetime().replace(tzinfo=None)
-    except ValueError: raise ValueError(f"Time data '{dt_str}' doesn't match any expected format")
 
 
 def get_consecutive_red_candles(df, current_loc):
@@ -68,12 +69,9 @@ def run_backtest(cfg):
 
     index_df_daily = None
     try:
-        index_filename = f"{cfg['regime_index_symbol']}_INDEX_daily_with_indicators.csv"
+        index_filename = f"{cfg['regime_index_symbol']}_daily_with_indicators.csv"
         index_path = os.path.join(data_folder_daily, index_filename)
-        index_df_daily = pd.read_csv(index_path, index_col=0, parse_dates=True)
-        index_df_daily.columns = [col.lower() for col in index_df_daily.columns]
-        if cfg['rs_filter']:
-            index_df_daily['return'] = index_df_daily['close'].pct_change(periods=cfg['rs_period']) * 100
+        index_df_daily = pd.read_csv(index_path, index_col='datetime', parse_dates=True)
         print(f"Successfully loaded Daily Index data from {index_path}")
     except FileNotFoundError:
         print(f"Error: Index file not found. Disabling filters.")
@@ -86,17 +84,13 @@ def run_backtest(cfg):
     for symbol in symbols:
         daily_path = os.path.join(data_folder_daily, f"{symbol}_daily_with_indicators.csv")
         if os.path.exists(daily_path):
-            df_d = pd.read_csv(daily_path, index_col=0, parse_dates=True)
-            df_d.columns = [col.lower() for col in df_d.columns]
+            df_d = pd.read_csv(daily_path, index_col='datetime', parse_dates=True)
             df_d = df_d.loc[cfg['start_date']:cfg['end_date']]
-            if cfg['volume_filter']: df_d['volume_ma'] = df_d['volume'].rolling(window=cfg['volume_ma_period']).mean()
-            if cfg['rs_filter']: df_d['return'] = df_d['close'].pct_change(periods=cfg['rs_period']) * 100
             stock_data_daily[symbol] = df_d
 
-        htf_path = os.path.join(data_folder_htf, f"{symbol}_daily_with_indicators.csv")
+        htf_path = os.path.join(data_folder_htf, f"{symbol}_{base_timeframe}_with_indicators.csv")
         if os.path.exists(htf_path):
-            df_h = pd.read_csv(htf_path, index_col=0, parse_dates=True)
-            df_h.columns = [col.lower() for col in df_h.columns]
+            df_h = pd.read_csv(htf_path, index_col='datetime', parse_dates=True)
             df_h = df_h.loc[cfg['start_date']:cfg['end_date']]
             if not df_h.empty:
                 df_h['red_candle'] = df_h['close'] < df_h['open']
@@ -107,7 +101,7 @@ def run_backtest(cfg):
     print(f"Successfully processed data for {len(stock_data_htf)} symbols.")
 
     portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
-    missed_trades_log = [] # New log for missed trades
+    missed_trades_log = []
     
     all_dates = index_df_daily.loc[cfg['start_date']:cfg['end_date']].index
     
@@ -166,8 +160,8 @@ def run_backtest(cfg):
                         start_of_htf_period = df_h.index[htf_loc-1] + timedelta(days=1)
                         days_in_period = df_d.loc[start_of_htf_period:date]
                         if days_in_period.empty or days_in_period.iloc[:-1]['high'].max() < entry_trigger_price:
-                            rs_ok = not cfg['rs_filter'] or (date in index_df_daily.index and df_d.loc[date, 'return'] > index_df_daily.loc[date, 'return'])
-                            volume_ok = not cfg['volume_filter'] or (pd.notna(today_daily_candle['volume_ma']) and today_daily_candle['volume'] >= (today_daily_candle['volume_ma'] * cfg['volume_multiplier']))
+                            rs_ok = not cfg['rs_filter'] or (date in index_df_daily.index and df_d.loc[date, f"return_{cfg['rs_period']}"] > index_df_daily.loc[date, f"return_{cfg['rs_period']}"])
+                            volume_ok = not cfg['volume_filter'] or (pd.notna(today_daily_candle[f"volume_{cfg['volume_ma_period']}_sma"]) and today_daily_candle['volume'] >= (today_daily_candle[f"volume_{cfg['volume_ma_period']}_sma"] * cfg['volume_multiplier']))
                             if rs_ok and volume_ok:
                                 entry_price = entry_trigger_price
                                 loc_d = df_d.index.get_loc(date)
@@ -218,7 +212,7 @@ def run_backtest(cfg):
         avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0
         avg_loss = abs(losing_trades['pnl'].mean()) if len(losing_trades) > 0 else 0
 
-    summary_content = f"""BACKTEST SUMMARY REPORT
+    summary_content = f"""BACKTEST SUMMARY REPORT (HTF IMMEDIATE BENCHMARK)
 ================================
 INPUT PARAMETERS:
 -----------------
@@ -231,7 +225,7 @@ EMA Period: {cfg['ema_period']}
 Stop Loss Lookback: {cfg['stop_loss_lookback']} days
 Market Regime Filter: {'Enabled' if cfg['market_regime_filter'] else 'Disabled'}
 Volume Filter: {'Enabled' if cfg['volume_filter'] else 'Disabled'}
-Relative Strength Filter: {'Enabled (vs NIFTY200)' if cfg['rs_filter'] else 'Disabled'}
+Relative Strength Filter: {'Enabled' if cfg['rs_filter'] else 'Disabled'}
 
 PERFORMANCE METRICS:
 --------------------
@@ -250,9 +244,9 @@ Average Losing Event: {avg_loss:,.2f}
 Missed Trades (Capital): {len(missed_trades_log)}
 """
     
-    summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report.txt")
-    trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail.csv")
-    missed_trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_missed_trades_log.csv")
+    summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report_htf_immediate_benchmark.txt")
+    trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail_htf_immediate_benchmark.csv")
+    missed_trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_missed_trades_log_htf_immediate_benchmark.csv")
     
     with open(summary_filename, 'w') as f: f.write(summary_content)
     
@@ -261,7 +255,7 @@ Missed Trades (Capital): {len(missed_trades_log)}
         trades_df = trades_df.reindex(columns=log_columns)
         trades_df.to_csv(trades_filename, index=False)
     else:
-        with open(trades_filename, 'w') as f: f.write(",".join(log_columns) + "\n")
+        pd.DataFrame(columns=log_columns).to_csv(trades_filename, index=False)
         
     if cfg['log_missed_trades'] and missed_trades_log:
         missed_trades_df = pd.DataFrame(missed_trades_log)
