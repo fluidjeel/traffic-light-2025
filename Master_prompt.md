@@ -24,7 +24,7 @@ Indicator Calculation (calculate_indicators_clean.py): Takes raw daily data, cal
 
 Strategy Simulation (Two Primary Engines):
 
-final_backtester_v8_hybrid_optimized.py: The bias-free backtester for the daily timeframe strategy.
+final_backtester_v8_hybrid_optimized.py: The bias-free backtester for the daily strategy.
 
 final_backtester_htf_hybrid.py: The bias-free backtester for the higher timeframe (weekly-immediate, monthly-immediate) strategies, built on the "Scout and Sniper" logic.
 
