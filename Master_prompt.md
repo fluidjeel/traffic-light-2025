@@ -1,69 +1,104 @@
 Master Project Context Prompt: Nifty 200 Pullback Strategy
-Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. The goal is for you, the LLM, to fully understand the project's architecture, data flow, and the precise logic of the two distinct trading strategies to assist with future modifications, bug fixes, or the addition of new features. Do not assume any prior knowledge; this document is the single source of truth.
+Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
-1. High-Level Project Goal & Status
-1.1. Goal:
-The project's objective is to develop, backtest, and ultimately automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge.
+Section 1: Context Setting - The Required Reading Sequence
+To understand this project, you must study the following files in the precise order listed below. This sequence is designed to build your knowledge from the high-level concept down to the specific implementation details.
 
-1.2. Current Status:
-The project is in an advanced research and development phase. The backtesting framework is now composed of two distinct, bias-free hybrid models: one for daily setups (final_backtester_v8_hybrid_optimized.py) and one for higher-timeframe setups (final_backtester_htf_hybrid.py). Both have been enhanced with a suite of toggleable, experimental features. The current focus is on systematically testing these features to find the optimal configuration and then proceeding with the strategic roadmap for further enhancements.
+project_implementation.md (This Document): Read this file first and in its entirety. It contains the master overview of the project's goals, architecture, and the definitive logic for all trading strategies.
 
-2. System Architecture & Script Workflow
-The project is a modular data pipeline. Each script performs a distinct, specialized task.
+project_code_explained.md: After understanding the master plan, read this file to get a high-level overview of what each specific Python script accomplishes.
 
-2.1. Script Pipeline:
-Data Acquisition:
+project_runbook_operational_guide.md: This document will explain the standard operating procedure for running the entire research pipeline, from data acquisition to analysis.
 
-fyers_equity_scraper.py: Downloads daily equity data.
+Core Benchmark Scripts: Finally, review the source code of the two "Golden Benchmark" scripts. They are the purest implementation of the trading logic, albeit with lookahead bias.
 
-fyers_index_scraper.py: Downloads daily index data (Nifty 200, India VIX).
+benchmark_generator_daily.py
 
-fyers_equity_scraper_15min.py: Downloads 15-minute equity data.
+benchmark_generator_htf.py
 
-Indicator Calculation (calculate_indicators_clean.py): Takes raw daily data, calculates all necessary indicators for all timeframes (daily, weekly, monthly), and saves the processed files.
+Section 2: High-Level Project Goal & Status
+Goal: To develop, backtest, and ultimately automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge on the Nifty 200 stock universe.
 
-Strategy Simulation (Two Primary Engines):
+Current Status: The project is in an advanced R&D phase. The foundational backtesting framework, consisting of two distinct benchmark generators and two corresponding bias-free simulators, is complete and has been logically validated. The project is now ready to proceed with the strategic roadmap for optimization.
 
-final_backtester_v8_hybrid_optimized.py: The bias-free backtester for the daily strategy.
+Section 3: System Architecture & Data Pipeline
+The project is a modular pipeline designed for rigorous, bias-free research.
 
-final_backtester_htf_hybrid.py: The bias-free backtester for the higher timeframe (weekly-immediate, monthly-immediate) strategies, built on the "Scout and Sniper" logic.
+Data Acquisition: Raw daily and 15-minute historical data for all stocks and indices is fetched using a suite of fyers_scrapers.
 
-Benchmark Generation (Two Engines):
+Data Processing & Resampling: The calculate_indicators_clean.py script acts as the central data processing engine. It takes the raw daily data, resamples it into higher timeframes (e.g., 'W-FRI' for weekly), calculates all necessary indicators (EMAs, SMAs, RS, ATR) for all timeframes, and saves these clean, enriched data files.
 
-final_backtester_benchmark_logger.py: Generates the "Golden Benchmark" for the daily strategy.
+Benchmark Generation: The benchmark_generator_* scripts run the strategies with intentional lookahead bias to establish the theoretical "perfect" performance.
 
-final_backtester_immediate_benchmark_htf.py: Generates the "Golden Benchmark" for the HTF-immediate strategy.
+Realistic Simulation: The simulator_* scripts run the strategies in a bias-free manner, using a combination of EOD and intraday data to replicate real-world trading conditions.
 
-Post-Hoc Analysis (analyze_breakeven_impact.py): A dedicated script to analyze the net P&L impact of the "Aggressive Breakeven" feature.
+Validation & Analysis: The validate_*_subset.py scripts are used to prove that the simulators are logically aligned with their benchmarks.
 
-3. Core Trading Strategies: Detailed Logic
-3.1. Daily Hybrid Strategy (final_backtester_v8_hybrid_optimized.py)
-Setup (T-1, EOD): Identifies a pattern of red candles followed by a green candle on the completed daily chart.
+Section 4: The Definitive Trading Strategy Logic
+This section contains the precise, detailed rules for the two core strategies.
 
-Execution (Day T, Intraday): Monitors the 15-minute chart. Enters on the first candle that crosses the trigger price and meets all real-time conviction filters (Volume Velocity, etc.).
+4.1. The Daily Strategy (benchmark_generator_daily.py)
+This strategy looks for a short-term pullback and reversal pattern on the daily chart.
 
-3.2. HTF "Scout and Sniper" Hybrid Strategy (final_backtester_htf_hybrid.py)
-Scout (Day T, EOD):
+Setup Identification (on Day T-1):
 
-Identifies a valid pullback pattern (one or more red candles) on the completed weekly chart (T-1).
+Find a Green Candle: The candle for Day T-1 must be a green_candle (close > open).
 
-Checks the just-completed daily candle (Day T) to see if it confirmed a breakout above the weekly pattern's high.
+Apply Quality Filters: This green candle must meet two strict quality criteria:
 
-If both are true, it adds the stock to a target list for tomorrow (Day T+1).
+It must close above its 30-day EMA.
 
-Sniper (Day T+1, Intraday):
+It must close in the lower half of its own range (close < (high + low) / 2).
 
-Monitors the 15-minute chart for stocks on the target list only.
+Confirm a Preceding Pullback: The script looks back from Day T-2 to confirm at least one preceding red_candle.
 
-Enters on the first 15-minute candle that meets all real-time conviction filters.
+Entry Conditions (on Day T):
 
-3.3. Universal Trade Management & Experimental Features
-Both bias-free backtesters share the same suite of toggleable features for execution and trade management:
+Price Breakout: The high of the candle on Day T must cross above the high of the setup pattern.
 
-Dynamic Slippage Model: Simulates realistic transaction costs based on liquidity (volume) and volatility (VIX).
+Market Regime Filter: The Nifty 200 Index must be trading above its 50-day EMA.
 
-Partial Profit Target: A toggleable 1:1 risk/reward partial profit exit.
+Volume Filter: The volume on Day T must be at least 1.3x its 20-day average volume.
 
-Aggressive Breakeven: A toggleable rule to move the stop to just above breakeven on profitable EOD positions.
+Relative Strength (RS) Filter: The stock's 30-day price return must be greater than the Nifty 200's 30-day price return.
 
-HTF Trailing Stop: A toggleable rule (for the HTF backtester) to switch to a weekly-low-based trailing stop after a trade is profitable.
+4.2. The HTF Strategy (benchmark_generator_htf.py)
+This strategy identifies a setup on a higher timeframe (e.g., weekly) and confirms the entry on the daily chart.
+
+Setup Identification (Multi-Timeframe):
+
+Find a Weekly Pattern: It looks at the most recently completed weekly candle. It checks for the following:
+
+The weekly candle must be a green_candle.
+
+It must be preceded by at least one red_candle on the weekly chart.
+
+It must close above its 30-week EMA.
+
+It must close in the lower half of its weekly range (close < (high + low) / 2).
+
+Confirm a Daily Breakout: After identifying a valid weekly pattern, it waits for a daily candle within the current week to meet these conditions:
+
+The daily candle's high must cross above the high of the preceding weekly red candles.
+
+It must be the first time this breakout has happened within the current weekly period.
+
+Entry Conditions (on the Day of the Daily Breakout):
+
+On the same day the daily breakout is confirmed, it applies the exact same three End-of-Day filters as the daily strategy (Market Regime, Volume, RS).
+
+4.3. Universal Trade Management Rules
+Once a position is opened in either strategy, it is managed by the following rules:
+
+Initial Stop-Loss: The lowest low of the 5 daily candles preceding the entry.
+
+Partial Profit Target: A 1:1 risk/reward target is set. If hit, half the position is sold, and the stop-loss is moved to breakeven.
+
+Trailing Stop-Loss: For the remaining half, the stop is trailed under the low of any subsequent green daily candle.
+
+Section 5: The Bias-Free Simulators
+The simulator_* scripts are the realistic, actionable versions of the benchmarks. Their sole purpose is to replicate the benchmark logic without lookahead bias.
+
+simulator_daily_hybrid.py: At the end of Day T-1, it performs the entire setup identification and filtering process of the daily benchmark using only data available at that time. If a stock passes, it is added to a watchlist for Day T, where it is monitored intraday for a price breakout.
+
+simulator_htf_scout_sniper.py: This uses the "Scout and Sniper" architecture. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout on the completed daily chart of Day T. The Sniper then operates on Day T+1, looking only for intraday conviction signals (not a price breakout).

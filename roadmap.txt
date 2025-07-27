@@ -4,6 +4,8 @@ With the backtesting framework now robust and bias-free for all intended timefra
 Phase 0: Foundational Validation & Refinement
 Objective: Solidify the integrity of the backtesting framework and establish a data-driven baseline for all future enhancements.
 
+Tasks:
+
 Complete Subset Validation for Daily Strategy: Systematically validate that the simulator_daily_hybrid.py script is a true subset of its corresponding benchmark, resolving any discrepancies to ensure logical consistency.
 
 Finalize HTF 'Immediate' Entry Logic: Enhance the simulator_htf_scout_sniper.py script to refine the rules for what constitutes a valid "immediate" entry, ensuring the logic is robust and aligns with the strategy's core principles.
@@ -15,37 +17,37 @@ Perform Final Lookahead Bias Audit: Conduct a final, manual, and code-assisted r
 Phase 1: Implement Core Risk Architecture & Diagnostics
 Objective: Immediately control portfolio-level risk and establish the tools needed for data-driven optimization.
 
-Implement Portfolio-Level Circuit Breakers:
+Tasks:
 
-Max Open Positions: Code a hard limit on concurrent open positions (e.g., 3-5).
+Implement Portfolio-Level Circuit Breakers.
 
-Daily Drawdown Limit: Implement a portfolio-wide "kill switch" that halts new entries for the day if the daily P&L drops below a set threshold (e.g., -2.5% of equity).
-
-Implement Systematic Performance Diagnostics: Build the diagnostic logger to compare Golden Benchmark trades to the Hybrid model's actions, identifying key sources of performance leakage.
+Implement Systematic Performance Diagnostics.
 
 Phase 2: Sharpen the Alpha & Build Conviction Engine
 Objective: Improve the quality of entry signals and create the logic engine for dynamic risk.
 
-Implement Adaptive Volume Velocity Filter: Integrate the filter that compares current 15-min volume to the 70th percentile for that specific time slot, with a multiplier that adapts to the VIX.
+Tasks:
 
-Implement Intraday Relative Strength Compass: Integrate the filter that calculates the real-time performance spread against the Nifty 200 from the pre-market high.
+Implement Adaptive Volume Velocity Filter.
 
-Develop the Composite Signal Conviction Score: Create a function that generates a single numerical score representing the quality of a setup based on all active filters.
+Implement Intraday Relative Strength Compass.
+
+Develop the Composite Signal Conviction Score.
 
 Phase 3: Implement Dynamic Risk & Advanced Filters
 Objective: Link capital allocation directly to signal quality and add further layers of confirmation.
 
-Implement Dynamic Position Sizing: Replace the fixed-risk model. Use the Composite Signal Conviction Score from Phase 2 to dynamically adjust the percentage of capital risked on each trade.
+Tasks:
 
-Add Advanced Confirmation Filters:
+Implement Dynamic Position Sizing.
 
-Multi-Timeframe (MTF) Confirmation: Add the Daily -> Hourly -> 15-Min alignment check.
-
-Market Breadth Filter: Add the real-time Advance/Decline ratio check.
+Add Advanced Confirmation Filters (MTF, Market Breadth).
 
 Phase 4: The Final Frontier (Predictive Modeling)
 Objective: Bridge the final performance gap to the benchmark using advanced, data-driven techniques.
 
-Develop the Predictive ML Filter: Train a GradientBoostingClassifier to predict the probability of a setup passing the benchmark's EOD filters.
+Tasks:
 
-Develop "Second Chance" Protocol: Code and test the protocol to intelligently re-enter valid setups that were missed on the initial breakout.
+Develop the Predictive ML Filter.
+
+Develop "Second Chance" Protocol.

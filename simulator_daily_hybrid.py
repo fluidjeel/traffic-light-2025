@@ -7,9 +7,12 @@
 #
 # MODIFICATION:
 # 1. Renamed from final_backtester_v8_hybrid_optimized.py.
-# 2. LOGIC ALIGNMENT: The watchlist generation logic is now a 1:1 bias-free
-#    replica of the setup identification and EOD filtering logic from the
-#    provided benchmark_generator_daily.py script.
+# 2. LOGIC ALIGNMENT: The watchlist generation logic has been completely rewritten
+#    to be a 1:1 bias-free replica of the setup identification and EOD filtering
+#    logic from the provided benchmark_generator_daily.py script, fixing the
+#    one-day timing mismatch.
+# 3. BUG FIX: Added a check to handle NaN values during stop-loss calculation
+#    to prevent a ValueError crash.
 
 import pandas as pd
 import os
@@ -60,7 +63,7 @@ config = {
 
 def get_consecutive_red_candles(df, current_loc):
     red_candles = []
-    i = current_loc - 2 
+    i = current_loc - 1 
     while i >= 0 and df.iloc[i]['red_candle']:
         red_candles.append(df.iloc[i])
         i -= 1
@@ -191,7 +194,11 @@ def run_backtest(cfg):
                         if filters_passed:
                             entry_price = candle['close']
                             daily_df, daily_loc = daily_data[symbol], daily_data[symbol].index.get_loc(date)
-                            stop_loss = daily_df.iloc[max(0, daily_loc - 1 - cfg['stop_loss_lookback']):daily_loc-1]['low'].min()
+                            stop_loss = daily_df.iloc[max(0, daily_loc - cfg['stop_loss_lookback']):loc]['low'].min()
+                            
+                            # --- BUG FIX: Check for NaN in stop_loss ---
+                            if pd.isna(stop_loss): continue
+                                
                             risk_per_share = entry_price - stop_loss
                             if risk_per_share <= 0: continue
                             shares = math.floor((equity_at_sod * (cfg['risk_per_trade_percent'] / 100)) / risk_per_share)
@@ -214,12 +221,13 @@ def run_backtest(cfg):
                 try:
                     loc = df.index.get_loc(date)
                     if loc < 2: continue
-                    setup_candle = df.iloc[loc-1] # Setup is on T-1
+                    
+                    setup_candle = df.iloc[loc]
                     setup_date = setup_candle.name
                     
-                    # --- LOGIC ALIGNMENT: Replicating benchmark's setup identification ---
                     if not setup_candle['green_candle']: continue
                     if not (setup_candle['close'] > setup_candle[f"ema_{cfg['ema_period']}"]): continue
+                    
                     red_candles = get_consecutive_red_candles(df, loc)
                     if not red_candles: continue
                     
@@ -227,13 +235,9 @@ def run_backtest(cfg):
                     setup_id = f"{symbol}_{setup_date.strftime('%Y-%m-%d')}"
                     log_entry = {'setup_id': setup_id, 'symbol': symbol, 'setup_date': setup_date, 'trigger_price': trigger_price, 'status': 'IDENTIFIED'}
                     
-                    # --- LOGIC ALIGNMENT: Applying benchmark's EOD filters without lookahead bias ---
-                    # The benchmark applies these filters on the trigger day (T).
-                    # The simulator must apply them on the setup day (T-1).
-                    trigger_candle_for_filters = df.iloc[loc] # Use T's data for filters as per benchmark
-                    rs_ok = not cfg['rs_filter'] or (date in index_df_daily.index and trigger_candle_for_filters[f"return_{cfg['rs_period']}"] > index_df_daily.loc[date][f"return_{cfg['rs_period']}"])
+                    rs_ok = not cfg['rs_filter'] or (setup_date in index_df_daily.index and df.loc[setup_date, f"return_{cfg['rs_period']}"] > index_df_daily.loc[setup_date, f"return_{cfg['rs_period']}"])
                     if not rs_ok: continue
-                    volume_ok = not cfg['volume_filter'] or (pd.notna(trigger_candle_for_filters[f"volume_{cfg['volume_ma_period']}_sma"]) and trigger_candle_for_filters['volume'] >= (trigger_candle_for_filters[f"volume_{cfg['volume_ma_period']}_sma"] * cfg['volume_multiplier']))
+                    volume_ok = not cfg['volume_filter'] or (pd.notna(setup_candle[f"volume_{cfg['volume_ma_period']}_sma"]) and setup_candle['volume'] >= (setup_candle[f"volume_{cfg['volume_ma_period']}_sma"] * cfg['volume_multiplier']))
                     if not volume_ok: continue
                     
                     all_setups_log.append(log_entry)
@@ -266,7 +270,7 @@ def run_backtest(cfg):
         entry_date = log_entry['setup_date'] + timedelta(days=1)
         if entry_date in daily_data[log_entry['symbol']].index:
             loc = daily_data[log_entry['symbol']].index.get_loc(entry_date)
-            stop_loss = daily_data[log_entry['symbol']].iloc[max(0, loc - 1 - cfg['stop_loss_lookback']):loc-1]['low'].min()
+            stop_loss = daily_data[log_entry['symbol']].iloc[max(0, loc - cfg['stop_loss_lookback']):loc]['low'].min()
             if pd.notna(stop_loss):
                 exit_date, pnl = simulate_trade_outcome(log_entry['symbol'], entry_date, log_entry['trigger_price'], stop_loss, daily_data)
                 all_setups_df.loc[index, 'hypothetical_exit_date'] = exit_date

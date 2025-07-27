@@ -12,12 +12,16 @@ Principle: The existing, functional code has been debugged through a long, itera
 Directive: You must not refactor existing code for purely stylistic reasons (e.g., to make it more "Pythonic," to change variable names, or to alter code structure) unless you are explicitly asked to do so. Your primary function is to enhance, not to restyle.
 
 Rule 3: Implement Incremental and Additive Changes Only
-Principle: The system's stability is best maintained by building upon the existing structure, not by replacing it.
+Principle: The system's stability is paramount. Changes should be small, isolated, and easy to verify.
 
-Directive: All new features or enhancements must be implemented as incremental, additive changes. New logic should be added as new, self-contained blocks, functions, or, if necessary, new scripts. Avoid making sweeping changes to core functions.
+Directive: When modifying existing code, your changes must be additive unless you are explicitly instructed to perform a refactor.
+
+DO: Add a new if condition, a new function, a new parameter to a function, or new logging statements.
+
+DO NOT: Rewrite or restructure an entire function or script to accommodate a new feature.
 
 Rule 4: Preserve the Core Strategy Logic
-Principle: The performance of the system is highly sensitive to the core trading rules. Any change must be a deliberate, conscious decision made by the project owner.
+Principle: The core trading rules are the "alpha" of the system and have been carefully developed.
 
 Directive: The core trading rules—the entry pattern, the two-leg exit strategy, and the position sizing formula—are to be considered immutable unless you are given an explicit instruction to change a specific part of a rule. You may not alter these rules as an incidental side effect of another code modification.
 
