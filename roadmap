@@ -1,49 +1,51 @@
-Strategic Roadmap: Nifty 200 Pullback System
-This roadmap outlines the sequential phases to enhance the backtester, improve its performance (CAGR), and reduce its drawdowns.
+Future Vision: The Refined Strategic Roadmap
+With the backtesting framework now robust and bias-free for all intended timeframes, the project will proceed with the formal strategic roadmap. The focus is on implementing the features from the following phases to systematically improve CAGR and reduce drawdown.
 
-Phase 0: Fortify the Foundation (Completed)
-Objective: Establish a truthful performance baseline by correcting for optimistic assumptions.
+Phase 0: Foundational Validation & Refinement
+Objective: Solidify the integrity of the backtesting framework and establish a data-driven baseline for all future enhancements.
 
-[x] Implement High-Fidelity Slippage Model: Integrate the multi-factor dynamic slippage function.
+Complete Subset Validation for Daily Strategy: Systematically validate that the simulator_daily_hybrid.py script is a true subset of its corresponding benchmark, resolving any discrepancies to ensure logical consistency.
 
-[x] Re-run and Re-baseline: Execute the backtester with the new slippage model to establish the New, Truthful Baseline.
+Finalize HTF 'Immediate' Entry Logic: Enhance the simulator_htf_scout_sniper.py script to refine the rules for what constitutes a valid "immediate" entry, ensuring the logic is robust and aligns with the strategy's core principles.
 
-[ ] Acknowledge & Defer: Formally acknowledge that survivorship bias is an unaddressed issue. (Task deferred until pre-deployment).
+Conduct Parameter Sensitivity Analysis: Perform a comprehensive analysis of the all_setups_log.csv files to identify the most impactful strategy parameters (e.g., EMA periods, RS lookbacks) and optimize them for the baseline strategy.
+
+Perform Final Lookahead Bias Audit: Conduct a final, manual, and code-assisted review of both simulator scripts to re-verify that no sources of lookahead bias exist before proceeding with new feature development.
 
 Phase 1: Implement Core Risk Architecture & Diagnostics
 Objective: Immediately control portfolio-level risk and establish the tools needed for data-driven optimization.
 
-[ ] Implement Portfolio-Level Circuit Breakers:
+Implement Portfolio-Level Circuit Breakers:
 
-[ ] Max Open Positions: Code a hard limit on concurrent open positions (e.g., 3-5).
+Max Open Positions: Code a hard limit on concurrent open positions (e.g., 3-5).
 
-[ ] Daily Drawdown Limit: Implement a portfolio-wide "kill switch" that halts new entries for the day if the daily P&L drops below a set threshold (e.g., -2.5% of equity).
+Daily Drawdown Limit: Implement a portfolio-wide "kill switch" that halts new entries for the day if the daily P&L drops below a set threshold (e.g., -2.5% of equity).
 
-[ ] Implement Systematic Performance Diagnostics: Build the diagnostic logger to compare Golden Benchmark trades to the Hybrid model's actions, identifying key sources of performance leakage.
+Implement Systematic Performance Diagnostics: Build the diagnostic logger to compare Golden Benchmark trades to the Hybrid model's actions, identifying key sources of performance leakage.
 
 Phase 2: Sharpen the Alpha & Build Conviction Engine
 Objective: Improve the quality of entry signals and create the logic engine for dynamic risk.
 
-[ ] Implement Adaptive Volume Velocity Filter: Integrate the filter that compares current 15-min volume to the 70th percentile for that specific time slot, with a multiplier that adapts to the VIX.
+Implement Adaptive Volume Velocity Filter: Integrate the filter that compares current 15-min volume to the 70th percentile for that specific time slot, with a multiplier that adapts to the VIX.
 
-[ ] Implement Intraday Relative Strength Compass: Integrate the filter that calculates the real-time performance spread against the Nifty 200 from the pre-market high.
+Implement Intraday Relative Strength Compass: Integrate the filter that calculates the real-time performance spread against the Nifty 200 from the pre-market high.
 
-[ ] Develop the Composite Signal Conviction Score: Create a function that generates a single numerical score representing the quality of a setup based on all active filters.
+Develop the Composite Signal Conviction Score: Create a function that generates a single numerical score representing the quality of a setup based on all active filters.
 
 Phase 3: Implement Dynamic Risk & Advanced Filters
 Objective: Link capital allocation directly to signal quality and add further layers of confirmation.
 
-[ ] Implement Dynamic Position Sizing: Replace the fixed-risk model. Use the Composite Signal Conviction Score from Phase 2 to dynamically adjust the percentage of capital risked on each trade.
+Implement Dynamic Position Sizing: Replace the fixed-risk model. Use the Composite Signal Conviction Score from Phase 2 to dynamically adjust the percentage of capital risked on each trade.
 
-[ ] Add Advanced Confirmation Filters:
+Add Advanced Confirmation Filters:
 
-[ ] Multi-Timeframe (MTF) Confirmation: Add the Daily -> Hourly -> 15-Min alignment check.
+Multi-Timeframe (MTF) Confirmation: Add the Daily -> Hourly -> 15-Min alignment check.
 
-[ ] Market Breadth Filter: Add the real-time Advance/Decline ratio check.
+Market Breadth Filter: Add the real-time Advance/Decline ratio check.
 
 Phase 4: The Final Frontier (Predictive Modeling)
 Objective: Bridge the final performance gap to the benchmark using advanced, data-driven techniques.
 
-[ ] Develop the Predictive ML Filter: Train a GradientBoostingClassifier to predict the probability of a setup passing the benchmark's EOD filters.
+Develop the Predictive ML Filter: Train a GradientBoostingClassifier to predict the probability of a setup passing the benchmark's EOD filters.
 
-[ ] Develop "Second Chance" Protocol: Code and test the protocol to intelligently re-enter valid setups that were missed on the initial breakout.
+Develop "Second Chance" Protocol: Code and test the protocol to intelligently re-enter valid setups that were missed on the initial breakout.

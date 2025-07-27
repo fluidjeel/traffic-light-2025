@@ -3,11 +3,7 @@
 # Description:
 # This is a modified version of the original lookahead-bias script, specifically
 # adapted to generate a "Golden Benchmark" for the HTF-immediate strategy.
-#
-# MODIFICATION:
-# 1. Updated all file paths and column name references to align with the
-#    current project data structure (output from calculate_indicators_clean.py).
-# 2. Preserved the core lookahead bias logic for benchmark generation.
+# It uses the current data folder structure but preserves the lookahead bias.
 
 import pandas as pd
 import os
@@ -20,7 +16,7 @@ import sys
 config = {
     'initial_capital': 1000000,
     'risk_per_trade_percent': 4.0,
-    'timeframe': 'weekly-immediate', # Options: 'weekly-immediate', 'monthly-immediate'
+    'timeframe': 'weekly-immediate',
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
     'start_date': '2020-01-01',
@@ -44,7 +40,7 @@ config = {
 
 def get_consecutive_red_candles(df, current_loc):
     red_candles = []
-    i = current_loc - 2 
+    i = current_loc - 2
     while i >= 0 and df.iloc[i]['red_candle']:
         red_candles.append(df.iloc[i])
         i -= 1
@@ -52,14 +48,14 @@ def get_consecutive_red_candles(df, current_loc):
 
 def run_backtest(cfg):
     start_time = time.time()
-    
+
     base_timeframe = cfg['timeframe'].replace('-immediate', '')
     data_folder_htf = os.path.join(cfg['data_folder_base'], base_timeframe)
     data_folder_daily = os.path.join(cfg['data_folder_base'], 'daily')
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs(cfg['log_folder'], exist_ok=True)
-    
+
     try:
         symbols = pd.read_csv(cfg['nifty_list_csv'])['Symbol'].tolist()
         print(f"Loaded {len(symbols)} symbols from {cfg['nifty_list_csv']}")
@@ -102,15 +98,15 @@ def run_backtest(cfg):
 
     portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
     missed_trades_log = []
-    
+
     all_dates = index_df_daily.loc[cfg['start_date']:cfg['end_date']].index
-    
+
     print("Starting backtest simulation...")
     for i, date in enumerate(all_dates):
         progress_str = f"Processing {i+1}/{len(all_dates)}: {date.date()} | Equity: {portfolio['equity']:,.0f} | Positions: {len(portfolio['positions'])} | Trades: {len(portfolio['trades'])}"
         sys.stdout.write(f"\r{progress_str.ljust(100)}"); sys.stdout.flush()
-        
-        exit_proceeds = 0; to_remove = []; todays_exits = [] 
+
+        exit_proceeds = 0; to_remove = []; todays_exits = []
         for pos_id, pos in list(portfolio['positions'].items()):
             symbol = pos['symbol']
             if symbol not in stock_data_daily or date not in stock_data_daily[symbol].index: continue
@@ -118,7 +114,7 @@ def run_backtest(cfg):
             if not pos['partial_exit'] and daily_data['high'] >= pos['target']:
                 shares = pos['shares'] // 2; price = pos['target']; exit_proceeds += shares * price
                 todays_exits.append({'symbol': symbol, 'entry_date': pos['entry_date'].date(), 'exit_date': date.date(), 'entry_price': pos['entry_price'], 'pnl': (price - pos['entry_price']) * shares, 'exit_type': 'Partial Profit (1:1)', **pos})
-                pos['shares'] -= shares; pos['partial_exit'] = True; pos['stop_loss'] = pos['entry_price'] 
+                pos['shares'] -= shares; pos['partial_exit'] = True; pos['stop_loss'] = pos['entry_price']
             if pos['shares'] > 0 and daily_data['low'] <= pos['stop_loss']:
                 price = pos['stop_loss']; exit_proceeds += pos['shares'] * price
                 todays_exits.append({'symbol': symbol, 'entry_date': pos['entry_date'].date(), 'exit_date': date.date(), 'entry_price': pos['entry_price'], 'pnl': (price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', **pos})
@@ -137,7 +133,7 @@ def run_backtest(cfg):
         market_uptrend = True
         if cfg['market_regime_filter'] and date in index_df_daily.index:
             if index_df_daily.loc[date]['close'] < index_df_daily.loc[date][f"ema_{cfg['regime_ma_period']}"]: market_uptrend = False
-        
+
         if market_uptrend:
             for symbol, df_h in stock_data_htf.items():
                 if any(pos['symbol'] == symbol for pos in portfolio['positions'].values()): continue
@@ -153,7 +149,7 @@ def run_backtest(cfg):
                     if not red_candles_h: continue
                     if prev1_h['close'] < (prev1_h['high'] + prev1_h['low']) / 2: continue
                     if not (prev1_h['close'] > prev1_h[f"ema_{cfg['ema_period']}"]): continue
-                    
+
                     entry_trigger_price = max([c['high'] for c in red_candles_h])
                     today_daily_candle = df_d.loc[date]
                     if today_daily_candle['high'] >= entry_trigger_price:
@@ -166,6 +162,8 @@ def run_backtest(cfg):
                                 entry_price = entry_trigger_price
                                 loc_d = df_d.index.get_loc(date)
                                 stop_loss = df_d.iloc[max(0, loc_d - cfg['stop_loss_lookback']):loc_d]['low'].min()
+                                if pd.isna(stop_loss):
+                                    stop_loss = df_d.iloc[loc_d - 1]['low']
                                 risk_per_share = entry_price - stop_loss
                                 if risk_per_share < (entry_price * 0.001): continue
                                 equity_at_entry = portfolio['equity']
@@ -181,10 +179,10 @@ def run_backtest(cfg):
                                             'target': entry_price + risk_per_share
                                         })
                 except Exception: pass
-        
+
         eod_equity = portfolio['cash']
         for pos in portfolio['positions'].values():
-            if pos['symbol'] in stock_data_daily and date in stock_data_daily[pos['symbol']].index: 
+            if pos['symbol'] in stock_data_daily and date in stock_data_daily[pos['symbol']].index:
                 eod_equity += pos['shares'] * stock_data_daily[pos['symbol']].loc[date]['close']
         portfolio['equity'] = eod_equity
         portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
@@ -194,11 +192,11 @@ def run_backtest(cfg):
 
     print("\n\n--- BACKTEST COMPLETE ---")
     final_equity = portfolio['equity']
-    net_pnl = final_equity - cfg['initial_capital']
+    net_pnl = final_equity - config['initial_capital']
     equity_df = pd.DataFrame(portfolio['daily_values']).set_index('date')
     if not equity_df.empty:
         years = (equity_df.index[-1] - equity_df.index[0]).days / 365.25
-        cagr = ((final_equity / cfg['initial_capital']) ** (1 / years) - 1) * 100 if years > 0 else 0
+        cagr = ((final_equity / config['initial_capital']) ** (1 / years) - 1) * 100 if years > 0 else 0
         peak = equity_df['equity'].cummax(); drawdown = (equity_df['equity'] - peak) / peak; max_drawdown = abs(drawdown.min()) * 100
     else: cagr, max_drawdown = 0, 0
     trades_df = pd.DataFrame(portfolio['trades'])
@@ -243,20 +241,20 @@ Average Winning Event: {avg_win:,.2f}
 Average Losing Event: {avg_loss:,.2f}
 Missed Trades (Capital): {len(missed_trades_log)}
 """
-    
+
     summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report_htf_immediate_benchmark.txt")
     trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail_htf_immediate_benchmark.csv")
     missed_trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_missed_trades_log_htf_immediate_benchmark.csv")
-    
+
     with open(summary_filename, 'w') as f: f.write(summary_content)
-    
+
     log_columns = ['symbol', 'entry_date', 'exit_date', 'entry_price', 'pnl', 'exit_type', 'portfolio_equity_on_entry', 'portfolio_equity_on_exit', 'risk_per_share', 'initial_shares', 'initial_stop_loss']
     if not trades_df.empty:
         trades_df = trades_df.reindex(columns=log_columns)
         trades_df.to_csv(trades_filename, index=False)
     else:
         pd.DataFrame(columns=log_columns).to_csv(trades_filename, index=False)
-        
+
     if cfg['log_missed_trades'] and missed_trades_log:
         missed_trades_df = pd.DataFrame(missed_trades_log)
         missed_trades_df.to_csv(missed_trades_filename, index=False)
