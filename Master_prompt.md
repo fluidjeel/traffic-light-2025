@@ -1,4 +1,4 @@
-Master Project Context Prompt: Nifty 200 Pullback Strategy
+Master Project Context Prompt: Nifty 200 Pullback Strategy (Version 3.0)
 Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
 Section 1: Context Setting - The Required Reading Sequence
@@ -34,27 +34,28 @@ Realistic Simulation: The simulator_* scripts run the strategies in a bias-free 
 
 Validation & Analysis: The validate_*_subset.py scripts are used to prove that the simulators are logically aligned with their benchmarks.
 
-Section 4: The Definitive Trading Strategy Logic
-This section contains the precise, detailed rules for the two core strategies.
+Section 4: The Definitive and Exclusive Trading Strategy Logic
+Crucial Instruction: The following rules are proprietary and unique. You must discard any generalized knowledge of common trading strategies (such as those based on ATR stops or simple EMA pullbacks). Your task is to extract and report on these specific rules only, not to interpret them through the lens of other common strategies. Your analysis must be a direct reflection of the logic written below and in the corresponding code. This section contains the precise, detailed rules for the two core strategies.
 
 4.1. The Daily Strategy (benchmark_generator_daily.py)
+(This section is updated to match the logic in the benchmark script you are using.)
+
 This strategy looks for a short-term pullback and reversal pattern on the daily chart.
 
 Setup Identification (on Day T-1):
 
 Find a Green Candle: The candle for Day T-1 must be a green_candle (close > open).
 
-Apply Quality Filters: This green candle must meet two strict quality criteria:
+Apply Quality Filters: This green candle must meet a strict quality criterion:
 
 It must close above its 30-day EMA.
-
-It must close in the lower half of its own range (close < (high + low) / 2).
+(Note: A previous version of this strategy also required the candle to close in the lower half of its range. This filter has been removed to make the setup criteria less strict.)
 
 Confirm a Preceding Pullback: The script looks back from Day T-2 to confirm at least one preceding red_candle.
 
 Entry Conditions (on Day T):
 
-Price Breakout: The high of the candle on Day T must cross above the high of the setup pattern.
+Price Breakout: The high of the candle on Day T must cross above the highest high of the entire setup pattern (which includes the setup candle and all preceding red candles).
 
 Market Regime Filter: The Nifty 200 Index must be trading above its 50-day EMA.
 
@@ -97,8 +98,10 @@ Partial Profit Target: A 1:1 risk/reward target is set. If hit, half the positio
 Trailing Stop-Loss: For the remaining half, the stop is trailed under the low of any subsequent green daily candle.
 
 Section 5: The Bias-Free Simulators
+(This section is updated to be more precise about the simulator's logic.)
+
 The simulator_* scripts are the realistic, actionable versions of the benchmarks. Their sole purpose is to replicate the benchmark logic without lookahead bias.
 
-simulator_daily_hybrid.py: At the end of Day T-1, it performs the entire setup identification and filtering process of the daily benchmark using only data available at that time. If a stock passes, it is added to a watchlist for Day T, where it is monitored intraday for a price breakout.
+simulator_daily_hybrid.py: This is the primary realistic simulator for the daily strategy. At the end of Day T-1, it identifies the complete setup pattern. It then immediately applies the benchmark's End-of-Day filters (Market Regime, Volume, and RS) using only the data available at the close of Day T-1. If a stock passes all checks, it is added to a watchlist for Day T, where it is monitored for an intraday price breakout confirmed by real-time conviction filters.
 
-simulator_htf_scout_sniper.py: This uses the "Scout and Sniper" architecture. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout on the completed daily chart of Day T. The Sniper then operates on Day T+1, looking only for intraday conviction signals (not a price breakout).
+simulator_htf_scout_sniper.py: (No changes needed for this description, it remains accurate.) This uses the "Scout and Sniper" architecture. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout on the completed daily chart of Day T. The Sniper then operates on Day T+1, looking only for intraday conviction signals (not a price breakout).

@@ -24,7 +24,7 @@ import sys
 # --- CONFIGURATION (Identical to final_backtester_benchmark_logger.py) ---
 config = {
     'initial_capital': 1000000,
-    'risk_per_trade_percent': 2.0,
+    'risk_per_trade_percent': 4.0,
     'timeframe': 'daily', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
