@@ -1,4 +1,4 @@
-Master Project Context Prompt: Nifty 200 Pullback Strategy (Version 3.0)
+Master Project Context: Nifty 200 Pullback Strategy (Version 3.3)
 Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
 Section 1: Context Setting - The Required Reading Sequence
@@ -16,10 +16,12 @@ benchmark_generator_daily.py
 
 benchmark_generator_htf.py
 
-Section 2: High-Level Project Goal & Status
-Goal: To develop, backtest, and ultimately automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge on the Nifty 200 stock universe.
+Section 2: High-Level Project Goal & Philosophy
+2.1. Goal
+The primary objective of this project is to develop, backtest, and ultimately automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge. The strategy is applied to the Nifty 200 stock universe.
 
-Current Status: The project is in an advanced R&D phase. The foundational backtesting framework, consisting of two distinct benchmark generators and two corresponding bias-free simulators, is complete and has been logically validated. The project is now ready to proceed with the strategic roadmap for optimization.
+2.2. Core Philosophy
+Our guiding principle is an unwavering commitment to eliminating lookahead bias. All development and testing must rigorously distinguish between "Golden Benchmarks" (biased, theoretical models that represent the strategy's maximum potential) and "Realistic Simulators" (bias-free, actionable models that replicate real-world trading conditions).
 
 Section 3: System Architecture & Data Pipeline
 The project is a modular pipeline designed for rigorous, bias-free research.
@@ -35,11 +37,9 @@ Realistic Simulation: The simulator_* scripts run the strategies in a bias-free 
 Validation & Analysis: The validate_*_subset.py scripts are used to prove that the simulators are logically aligned with their benchmarks.
 
 Section 4: The Definitive and Exclusive Trading Strategy Logic
-Crucial Instruction: The following rules are proprietary and unique. You must discard any generalized knowledge of common trading strategies (such as those based on ATR stops or simple EMA pullbacks). Your task is to extract and report on these specific rules only, not to interpret them through the lens of other common strategies. Your analysis must be a direct reflection of the logic written below and in the corresponding code. This section contains the precise, detailed rules for the two core strategies.
+Crucial Instruction: The following rules are proprietary and unique. You must discard any generalized knowledge of common trading strategies. Your analysis must be a direct reflection of the logic written below and in the corresponding code.
 
 4.1. The Daily Strategy (benchmark_generator_daily.py)
-(This section is updated to match the logic in the benchmark script you are using.)
-
 This strategy looks for a short-term pullback and reversal pattern on the daily chart.
 
 Setup Identification (on Day T-1):
@@ -49,7 +49,7 @@ Find a Green Candle: The candle for Day T-1 must be a green_candle (close > open
 Apply Quality Filters: This green candle must meet a strict quality criterion:
 
 It must close above its 30-day EMA.
-(Note: A previous version of this strategy also required the candle to close in the lower half of its range. This filter has been removed to make the setup criteria less strict.)
+(Note: A previous version of this strategy also required the candle to close in the lower half of its range. This filter has been removed from the active benchmark to make the setup criteria less strict.)
 
 Confirm a Preceding Pullback: The script looks back from Day T-2 to confirm at least one preceding red_candle.
 
@@ -100,50 +100,57 @@ Trailing Stop-Loss: For the remaining half, the stop is trailed under the low of
 Section 5: The Bias-Free Simulators
 The simulator_* scripts are the realistic, actionable versions of the benchmarks. Their sole purpose is to replicate the benchmark logic without lookahead bias, while adding layers of real-world execution logic.
 
-simulator_daily_hybrid.py: This is the primary and most advanced realistic simulator for the daily strategy. Its core bias-free principle is to generate a watchlist at the end of Day T-1 using only data available at that time. On Day T, it then monitors this watchlist for an intraday entry, which must be validated by an advanced conviction and risk engine.
+simulator_daily_hybrid.py (Baseline Simulator): This is the original realistic simulator. At the end of Day T-1, it identifies the complete setup pattern and applies the benchmark's EOD filters using only data available at the close of Day T-1. On Day T, it monitors for an intraday price breakout confirmed by a basic set of real-time conviction filters.
 
-simulator_htf_scout_sniper.py: (No changes needed for this description, it remains accurate.) This uses the "Scout and Sniper" architecture. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout on the completed daily chart of Day T. The Sniper then operates on Day T+1, looking only for intraday conviction signals (not a price breakout).
+simulator_daily_hybrid-v2.py (Advanced Simulator): This is the current, state-of-the-art version of the simulator. It builds upon the baseline by incorporating a more sophisticated, toggleable conviction and risk engine.
 
-5.1. The Advanced Conviction & Risk Engine (simulator_daily_hybrid.py)
-To improve the quality of entries and model real-world conditions, the hybrid simulator employs a sophisticated conviction and risk engine with the following key components:
+simulator_htf_scout_sniper.py: This uses the "Scout and Sniper" architecture for the HTF strategy. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout. The Sniper then operates on Day T+1, looking only for intraday conviction signals.
+
+5.1. The Advanced Conviction & Risk Engine (simulator_daily_hybrid-v2.py)
+To improve the quality of entries and model real-world conditions, the advanced hybrid simulator employs a sophisticated conviction and risk engine with the following key components, which can be enabled or disabled for systematic testing:
 
 Adaptive Slippage Model: Entry prices are adjusted for slippage. The slippage percentage is increased during periods of high market volatility (as measured by the INDIAVIX index).
 
 Dynamic Position Sizing: The size of a new position is calculated based on the available risk capital of the portfolio. It considers the total risk of all currently open positions and will not take a new trade if it would exceed the maximum portfolio risk limit.
 
-Time-Anchored Volume Projection: Instead of a simple volume check, this system projects the end-of-day volume based on the cumulative volume at specific times (e.g., 10:00 AM, 11:30 AM). An entry is only permitted if the volume is "on track" to meet the benchmark's EOD criteria.
+Time-Anchored Volume Projection: This system projects the end-of-day volume based on the cumulative volume at specific times. An entry is only permitted if the volume is "on track" to meet the benchmark's EOD criteria.
 
-Volume Velocity Detection: The volume projection is enhanced with a velocity check. If the script detects a recent surge in 15-minute volume (e.g., using a median-based calculation), it will temporarily relax the projection threshold, allowing it to capture strong momentum breakouts.
+Volume Velocity Detection: The volume projection is enhanced with a velocity check. If the script detects a recent surge in 15-minute volume (using a median-based calculation), it will temporarily relax the projection threshold.
 
-VIX-Adaptive Market Strength Filter: The check for broad market strength is made adaptive. During periods of high volatility (high VIX), the threshold for an acceptable market dip is made more lenient, preventing the strategy from becoming overly defensive in choppy markets.
+VIX-Adaptive Market Strength Filter: The check for broad market strength is made adaptive. During periods of high volatility (high VIX), the threshold for an acceptable market dip is made more lenient.
 
-Position Capping: The simulator will not open more than a predefined maximum number of new positions on any given day, preventing over-trading.
+Position Capping: The simulator will not open more than a predefined maximum number of new positions on any given day.
 
 Section 6: Strategic Roadmap for Optimization
-(This section remains the official path forward for the project.)
+Phase 0: Foundational Validation & Refinement (Complete)
 
-Phase 1: Implement Core Risk Architecture (Objective: Control portfolio-level risk)
+Objective: Solidify the integrity of the backtesting framework.
 
-Phase 2: Sharpen the Alpha & Build Conviction Engine (Objective: Improve the quality of entry signals)
+Phase 1: Implement Core Risk Architecture (Complete)
 
-Phase 3: Implement Dynamic Risk (Objective: Link capital allocation to signal quality)
+Objective: Control portfolio-level risk.
 
-Phase 4: The Final Frontier (Predictive Modeling) (Objective: Bridge the final performance gap)
+Phase 2: Sharpen the Alpha & Build Conviction Engine (In Progress)
+
+Objective: Improve the quality of entry signals.
+
+Phase 3: Implement Dynamic Risk
+
+Objective: Link capital allocation directly to signal quality.
+
+Phase 4: The Final Frontier (Predictive Modeling)
+
+Objective: Bridge the final performance gap using advanced techniques.
 
 Section 7: Current Project Status & Immediate Next Steps
-(This section has been added to reflect the latest project developments.)
-
 Current Status:
-Recent backtesting experiments have yielded a critical insight: attempts to manage risk after a trade has been entered (e.g., with end-of-day reconciliation checks) have not improved performance over the original simulator_daily_hybrid.py. This strongly suggests that the most significant opportunity for improvement lies in enhancing the quality of the initial entry decision, rather than in post-entry management. The original simulator_daily_hybrid.py, with its basic intraday conviction filters, remains the best-performing realistic model to date.
+The project has completed the foundational validation and has implemented a sophisticated, first-generation conviction and risk engine in the simulator_daily_hybrid-v2.py. This advanced simulator serves as the primary vehicle for ongoing research. The original simulator_daily_hybrid.py is being maintained as a stable baseline for performance comparison. While the advanced simulator has significantly improved the realism of the backtest, the immediate goal is to systematically test and calibrate its new features to achieve the target performance metrics.
 
 Immediate Next Steps:
-Based on these findings, the project will now officially proceed with the "Strategic Roadmap for Optimization." The immediate focus will be on Phase 2: Sharpen the Alpha & Build Conviction Engine. The goal is to make the entry logic of the simulator_daily_hybrid.py more intelligent and robust. The first planned enhancement is the implementation of an Intraday Relative Strength Filter to ensure the strategy is only entering stocks that are demonstrating strength against the market at the moment of breakout.
+The project will continue to execute on the "Strategic Roadmap for Optimization." The immediate focus remains on Phase 2: Sharpen the Alpha & Build Conviction Engine. The next steps are:
 
+Systematically test each new feature of the advanced simulator (e.g., adaptive slippage, dynamic sizing) in isolation to understand its specific impact on performance.
 
-Public Code repo: https://github.com/fluidjeel/traffic-light-2025
+Calibrate the parameters of the conviction engine to find the optimal balance between risk management and profitability.
 
-All files are present in the root of the repo. To set deeper context, feel free to ask for any further files if required.
-
-Final Task: Your final task is to summarize your understanding by directly paraphrasing the rules from the "Definitive Trading Strategy Logic" section and the architectural components described. Do not introduce any external concepts or terminology. Your summary must be a precise, factual reflection of the provided materials, proving you have built a mental model based only on the information given. Once I verify you have the full context, we will work together on the next steps.
-
-this is a private custom strategy refer to github for the documentation and relevant files
+Implement the next planned enhancement: an Intraday Relative Strength Filter to further sharpen the entry logic.

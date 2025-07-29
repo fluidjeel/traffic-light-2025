@@ -19,7 +19,7 @@ import numpy as np
 # --- CONFIGURATION (Aligned with the new benchmark) ---
 config = {
     'initial_capital': 1000000,
-    'risk_per_trade_percent': 2.0,
+    'risk_per_trade_percent': 4.0,
     'timeframe': 'daily', 
     'data_folder_base': 'data/processed',
     'intraday_data_folder': 'historical_data_15min',
