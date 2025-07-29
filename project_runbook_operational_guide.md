@@ -1,5 +1,5 @@
-Project Runbook & Operational Guide (Version 3.1)
-This document provides the Standard Operating Procedure (SOP) for running the Nifty 200 Pullback Strategy's research pipeline and a detailed guide to the day-wise activities for live or simulated execution.
+Project Runbook & Operational Guide (Version 4.0)
+This document provides the Standard Operating Procedure (SOP) for running the Nifty 200 Pullback Strategy's research pipeline and a detailed guide to the day-wise activities for live or simulated execution using the latest simulators.
 
 Part 1: Research & Backtesting Workflow
 This section outlines the standard process for conducting research and running backtests.
@@ -16,7 +16,7 @@ Run the 15-Minute Equity Scraper: python fyers_equity_scraper_15min.py
 Run the 15-Minute Nifty 200 Index Scraper: python fyers_nifty200_index_scraper_15min.py
 
 Step 2: Data Processing
-Process the raw data to create the necessary indicator files.
+Process the raw data to create the necessary indicator files for all timeframes.
 
 Run the Indicator Calculator: python calculate_indicators_clean.py
 
@@ -30,13 +30,13 @@ Generate HTF Benchmark: python benchmark_generator_htf.py
 Step 4: Run Realistic Simulators
 Execute the bias-free backtests to get realistic performance estimates.
 
-Configure the Script: Open the relevant simulator (simulator_daily_hybrid.py or simulator_htf_scout_sniper.py) and adjust the parameters in the config dictionary.
+Configure the Script: Open the relevant simulator (simulator_daily_hybrid-v2.py or htf_simulator_advanced.py) and adjust the parameters in the config dictionary.
 
 Execute the Backtest:
 
-For Daily Strategy: python simulator_daily_hybrid.py
+For Daily Strategy: python simulator_daily_hybrid-v2.py
 
-For HTF Strategy: python simulator_htf_scout_sniper.py
+For HTF Strategy: python htf_simulator_advanced.py
 
 Step 5: Perform Validation
 Verify the logical integrity of the simulators against their benchmarks.
@@ -50,54 +50,40 @@ python validate_htf_subset.py <path_to_benchmark_htf_log.csv> <path_to_simulator
 Part 2: Day-wise Execution Guide for Simulators
 This section details the specific, timed activities required to run the realistic simulators, replicating a live trading environment.
 
-A. Daily Strategy Execution (simulator_daily_hybrid.py)
-
+A. Daily Strategy Execution (simulator_daily_hybrid-v2.py)
 This strategy identifies a setup on Day T-1 and attempts to execute it on Day T.
 
 Post-Market / End-of-Day (EOD) on Day T-1 (e.g., Monday, after 3:30 PM)
 
-Run Watchlist Generation: Execute the watchlist generation portion of the simulator_daily_hybrid.py script.
+Run Watchlist Generation: Execute the watchlist generation portion of the script.
 
-What it Does: The script scans the completed daily data from Day T-1. It identifies all stocks that meet the core pattern (green candle preceded by reds) and pass all the end-of-day quality filters (EMA, Volume, RS, etc.).
+What it Does: The script scans the completed daily data from Day T-1. It identifies all stocks that meet the core pattern and pass all the end-of-day quality filters.
 
 Output: A watchlist of high-probability setups is generated for the next trading day, Day T.
 
-Pre-Market on Day T (e.g., Tuesday, before 9:15 AM)
-
-Run Gap-Up Filter: Execute the pre-market check within the simulator.
-
-What it Does: It checks the opening price for all stocks on the watchlist. Any stock that is set to open significantly above its trigger price is removed from the active watchlist for the day to avoid chasing an excessive gap.
-
 Intraday during Day T (e.g., Tuesday, 9:15 AM - 3:30 PM)
 
-Monitor for Entries: The script continuously monitors the 15-minute data for stocks remaining on the watchlist.
+Monitor for Entries: The script continuously monitors the 15-minute data for stocks on the watchlist.
 
-What it Does: When an intraday candle closes above the trigger price, it immediately checks the real-time Advanced Conviction Engine (VIX-adaptive market strength, volume projection, etc.). If all checks pass, an entry order is simulated.
+What it Does: When an intraday candle's high crosses the trigger price, it immediately checks the real-time Advanced Conviction Engine. If all checks pass, an entry order is simulated.
 
-Monitor Open Positions: The script also monitors 15-minute data for all open positions to manage exits based on the partial profit target or the current stop-loss level.
+Monitor Open Positions: The script also monitors 15-minute data for all open positions to manage exits.
 
-B. HTF Strategy Execution (simulator_htf_scout_sniper.py)
+B. HTF Strategy Execution (htf_simulator_advanced.py)
+This strategy uses the "Scout and Sniper" model to separate weekly setup discovery from intraday entry execution.
 
-This strategy uses the "Scout and Sniper" model to separate breakout confirmation from entry execution.
+Post-Market / End-of-Day (EOD) on Friday
 
-Post-Market / End-of-Day (EOD) on Day T (e.g., Monday, after 3:30 PM)
+Run the "Scout": Execute the scout_for_setups portion of the htf_simulator_advanced.py script.
 
-Run the "Scout": Execute the Scout portion of the simulator_htf_scout_sniper.py script.
+What it Does: The Scout scans all stocks against the weekly data that has just completed. It identifies all valid weekly pullback patterns that meet the definitive strategy criteria.
 
-What it Does: The Scout scans all stocks. It looks for weekly patterns where a breakout on the completed daily chart of Day T has already occurred and all EOD filters were met.
+Output: A high-probability "Target List" is generated for the entire following week (Monday-Friday). This list includes the symbol, its trigger price, and its target daily volume.
 
-Output: A high-probability "Target List" is generated for the Sniper to monitor on the next trading day, Day T+1.
+Intraday during the Following Week (Monday - Friday, 9:15 AM - 3:30 PM)
 
-Pre-Market on Day T+1 (e.g., Tuesday, before 9:15 AM)
+"Sniper" Monitors for Conviction: The Sniper monitors the 15-minute data for stocks on the active Target List.
 
-Run Imminence Filter (if enabled): This optional filter can be run to refine the Target List.
+What it Does: It is not waiting for a simple price breakout. When a stock on the list breaks its trigger price, the Sniper instantly validates the move using the full Advanced Conviction Engine (Volume Projection, VIX-Adaptive Strength, Intraday RS).
 
-What it Does: It checks if the daily candle from Day T was an "Inside Day" or "NR7". Only stocks showing this recent volatility contraction are kept on the active Target List for the Sniper.
-
-Intraday during Day T+1 (e.g., Tuesday, 9:15 AM - 3:30 PM)
-
-"Sniper" Monitors for Conviction: The Sniper monitors the 15-minute data for stocks on the active Target List only.
-
-What it Does: It is not waiting for a price breakout (that was confirmed yesterday). It is waiting for a 15-minute candle that shows sufficient conviction (passing Intraday Market Strength and Volume Velocity filters) to confirm the breakout has momentum.
-
-Execute & Manage: If conviction is found, an entry is simulated. Open positions are also managed intraday for exits.
+Execute & Manage: If and only if all conviction checks pass, an entry is simulated. Open positions are also managed intraday for exits based on the dynamic profit target and trailing stop-loss logic.
