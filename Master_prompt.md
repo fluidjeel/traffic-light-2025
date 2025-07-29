@@ -138,3 +138,12 @@ Recent backtesting experiments have yielded a critical insight: attempts to mana
 
 Immediate Next Steps:
 Based on these findings, the project will now officially proceed with the "Strategic Roadmap for Optimization." The immediate focus will be on Phase 2: Sharpen the Alpha & Build Conviction Engine. The goal is to make the entry logic of the simulator_daily_hybrid.py more intelligent and robust. The first planned enhancement is the implementation of an Intraday Relative Strength Filter to ensure the strategy is only entering stocks that are demonstrating strength against the market at the moment of breakout.
+
+
+Public Code repo: https://github.com/fluidjeel/traffic-light-2025
+
+All files are present in the root of the repo. To set deeper context, feel free to ask for any further files if required.
+
+Final Task: Your final task is to summarize your understanding by directly paraphrasing the rules from the "Definitive Trading Strategy Logic" section and the architectural components described. Do not introduce any external concepts or terminology. Your summary must be a precise, factual reflection of the provided materials, proving you have built a mental model based only on the information given. Once I verify you have the full context, we will work together on the next steps.
+
+this is a private custom strategy refer to github for the documentation and relevant files
