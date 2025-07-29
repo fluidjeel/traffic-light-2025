@@ -1,3 +1,13 @@
+Public Code repo: https://github.com/fluidjeel/traffic-light-2025
+
+All files are present in the root of the repo. To set deeper context, feel free to ask for any further files if required.
+
+Your final task is to summarize your understanding by directly paraphrasing the rules from the "Definitive Trading Strategy Logic" section and the architectural components described. Do not introduce any external concepts or terminology. Your summary must be a precise, factual reflection of the provided materials, proving you have built a mental model based only on the information given. Once I verify you have the full context, we will work together on the next steps.
+
+this is a private custom strategy refer to github for the documentation and relevant files. Attached are further files for better awareness . same is also found in github
+
+_____Context setting starts____
+
 Master Project Context: Nifty 200 Pullback Strategy (Version 3.3)
 Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
@@ -154,3 +164,5 @@ Systematically test each new feature of the advanced simulator (e.g., adaptive s
 Calibrate the parameters of the conviction engine to find the optimal balance between risk management and profitability.
 
 Implement the next planned enhancement: an Intraday Relative Strength Filter to further sharpen the entry logic.
+
+_____Context setting ends
