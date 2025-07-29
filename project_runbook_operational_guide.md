@@ -1,20 +1,19 @@
-Project Runbook & Operational Guide
-Version: 3.0
-Date: 2025-07-27
-
+Project Runbook & Operational Guide (Version 3.1)
 This document provides the Standard Operating Procedure (SOP) for running the Nifty 200 Pullback Strategy's research pipeline and a detailed guide to the day-wise activities for live or simulated execution.
 
 Part 1: Research & Backtesting Workflow
 This section outlines the standard process for conducting research and running backtests.
 
 Step 1: Data Acquisition
-Ensure all historical data is up-to-date.
+Ensure all historical data is up-to-date. This is a four-step process.
 
 Run the Daily Equity Scraper: python fyers_equity_scraper.py
 
 Run the Daily Index Scraper: python fyers_index_scraper.py
 
 Run the 15-Minute Equity Scraper: python fyers_equity_scraper_15min.py
+
+Run the 15-Minute Nifty 200 Index Scraper: python fyers_nifty200_index_scraper_15min.py
 
 Step 2: Data Processing
 Process the raw data to create the necessary indicator files.
@@ -52,6 +51,7 @@ Part 2: Day-wise Execution Guide for Simulators
 This section details the specific, timed activities required to run the realistic simulators, replicating a live trading environment.
 
 A. Daily Strategy Execution (simulator_daily_hybrid.py)
+
 This strategy identifies a setup on Day T-1 and attempts to execute it on Day T.
 
 Post-Market / End-of-Day (EOD) on Day T-1 (e.g., Monday, after 3:30 PM)
@@ -72,11 +72,12 @@ Intraday during Day T (e.g., Tuesday, 9:15 AM - 3:30 PM)
 
 Monitor for Entries: The script continuously monitors the 15-minute data for stocks remaining on the watchlist.
 
-What it Does: When an intraday candle's high crosses the trigger price, it immediately checks the real-time conviction filters (Intraday Market Strength, Volume Velocity). If they pass, an entry order is simulated.
+What it Does: When an intraday candle closes above the trigger price, it immediately checks the real-time Advanced Conviction Engine (VIX-adaptive market strength, volume projection, etc.). If all checks pass, an entry order is simulated.
 
 Monitor Open Positions: The script also monitors 15-minute data for all open positions to manage exits based on the partial profit target or the current stop-loss level.
 
 B. HTF Strategy Execution (simulator_htf_scout_sniper.py)
+
 This strategy uses the "Scout and Sniper" model to separate breakout confirmation from entry execution.
 
 Post-Market / End-of-Day (EOD) on Day T (e.g., Monday, after 3:30 PM)

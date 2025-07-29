@@ -1,4 +1,4 @@
-Project Code Explained (Version 3.2)
+Project Code Explained (Version 3.3)
 This document provides a detailed functional overview of each key Python script in the Nifty 200 Pullback Strategy project, including its importance, what it accomplishes, and its critical logic.
 
 1. Data Pipeline Scripts
@@ -12,7 +12,7 @@ Daily Equity Data (fyers_equity_scraper.py)
 
 15-Minute Equity Data (fyers_equity_scraper_15min.py)
 
-Daily Index Data (fyers_index_scraper.py)
+Daily Index Data (fyers_index_scraper.py for NIFTY200, INDIAVIX, etc.)
 
 15-Minute Index Data (fyers_nifty200_index_scraper_15min.py)
 
@@ -50,11 +50,21 @@ Critical Logic: On the day of a daily breakout, it uses the completed daily cand
 3. Realistic Simulators (Bias-Free)
 simulator_daily_hybrid.py
 
-Importance: The state-of-the-art, realistic backtesting engine for the daily strategy.
+Importance: The state-of-the-art, realistic backtesting engine for the daily strategy, featuring an advanced conviction and risk engine.
 
-Accomplishment: Identifies a setup on Day T-1 and attempts to execute it on Day T using 15-minute intraday data and real-time conviction filters.
+Accomplishment: Identifies a setup on Day T-1 and attempts to execute it on Day T using 15-minute intraday data and a sophisticated set of real-time filters.
 
-Critical Logic: The most critical block is the watchlist generation. At the end of Day T-1, it identifies a setup pattern and applies all the benchmark's EOD filters (Volume, RS, Market Regime) using only the data available up to the close of Day T-1. This is the correct, bias-free equivalent of the benchmark's filtering.
+Critical Logic: Its bias-free design is multi-faceted:
+
+Watchlist Generation: At the end of Day T-1, it identifies a setup pattern and applies all the benchmark's EOD filters (Volume, RS, Market Regime) using only the data available up to the close of Day T-1.
+
+Advanced Conviction Engine: On Day T, it does not enter on a simple price cross. Instead, it validates the entry with a sophisticated engine that includes:
+
+Adaptive Slippage and Position Sizing: Models realistic execution costs and manages portfolio-level risk.
+
+Volume Projection & Velocity: Uses time-anchored checks and median-based surge detection to ensure strong volume momentum.
+
+VIX-Adaptive Market Strength: Adjusts its market filter based on volatility to avoid being too timid in choppy markets.
 
 simulator_htf_scout_sniper.py
 

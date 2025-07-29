@@ -1,4 +1,4 @@
-Master Project Context: Nifty 200 Pullback Strategy (Version 3.2 - Corrected)
+Master Project Context: Nifty 200 Pullback Strategy (Version 3.3 - Consolidated)
 Objective: The following prompt provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
 Section 1: Context Setting - The Required Reading Sequence
@@ -98,60 +98,51 @@ Partial Profit Target: A 1:1 risk/reward target is set. If hit, half the positio
 Trailing Stop-Loss: For the remaining half, the stop is trailed under the low of any subsequent green daily candle.
 
 Section 5: The Bias-Free Simulators
-The simulator_* scripts are the realistic, actionable versions of the benchmarks. Their sole purpose is to replicate the benchmark logic without lookahead bias.
+The simulator_* scripts are the realistic, actionable versions of the benchmarks. Their sole purpose is to replicate the benchmark logic without lookahead bias, while adding layers of real-world execution logic.
 
-simulator_daily_hybrid.py: This is the primary realistic simulator for the daily strategy. At the end of Day T-1, it identifies the complete setup pattern. It then immediately applies the benchmark's End-of-Day filters (Market Regime, Volume, and RS) using only the data available at the close of Day T-1. If a stock passes all checks, it is added to a watchlist for Day T, where it is monitored for an intraday price breakout confirmed by real-time conviction filters.
+simulator_daily_hybrid.py: This is the primary and most advanced realistic simulator for the daily strategy. Its core bias-free principle is to generate a watchlist at the end of Day T-1 using only data available at that time. On Day T, it then monitors this watchlist for an intraday entry, which must be validated by an advanced conviction and risk engine.
 
 simulator_htf_scout_sniper.py: This uses the "Scout and Sniper" architecture. The Scout runs at the end of Day T to find weekly patterns that have already confirmed a breakout on the completed daily chart of Day T. The Sniper then operates on Day T+1, looking only for intraday conviction signals (not a price breakout).
 
-6. Strategic Roadmap for Optimization
+5.1. The Advanced Conviction & Risk Engine (simulator_daily_hybrid.py)
+To improve the quality of entries and model real-world conditions, the hybrid simulator employs a sophisticated conviction and risk engine with the following key components:
+
+Adaptive Slippage Model: Entry prices are adjusted for slippage. The slippage percentage is increased during periods of high market volatility (as measured by the INDIAVIX index).
+
+Dynamic Position Sizing: The size of a new position is calculated based on the available risk capital of the portfolio. It considers the total risk of all currently open positions and will not take a new trade if it would exceed the maximum portfolio risk limit.
+
+Time-Anchored Volume Projection: Instead of a simple volume check, this system projects the end-of-day volume based on the cumulative volume at specific times (e.g., 10:00 AM, 11:30 AM). An entry is only permitted if the volume is "on track" to meet the benchmark's EOD criteria.
+
+Volume Velocity Detection: The volume projection is enhanced with a velocity check. If the script detects a recent surge in 15-minute volume (e.g., using a median-based calculation), it will temporarily relax the projection threshold, allowing it to capture strong momentum breakouts.
+
+VIX-Adaptive Market Strength Filter: The check for broad market strength is made adaptive. During periods of high volatility (high VIX), the threshold for an acceptable market dip is made more lenient, preventing the strategy from becoming overly defensive in choppy markets.
+
+Position Capping: The simulator will not open more than a predefined maximum number of new positions on any given day, preventing over-trading.
+
+Section 6: Strategic Roadmap for Optimization
 Phase 0: Foundational Validation & Refinement (Complete)
+
 Objective: Solidify the integrity of the backtesting framework.
 
-Tasks:
+Phase 1: Implement Core Risk Architecture (Complete)
 
-Complete subset validation for both daily and HTF strategies.
-
-Finalize and lock the core logic of the benchmark and simulator scripts.
-
-Conduct parameter sensitivity analysis to find the optimal baseline parameters.
-
-Perform a final lookahead bias audit.
-
-Phase 1: Implement Core Risk Architecture
 Objective: Control portfolio-level risk.
 
-Tasks:
+Phase 2: Sharpen the Alpha & Build Conviction Engine (In Progress)
 
-Implement a hard limit on the number of concurrent open positions.
-
-Implement a portfolio-wide daily drawdown limit (a "kill switch").
-
-Phase 2: Sharpen the Alpha & Build Conviction Engine
 Objective: Improve the quality of entry signals.
 
-Tasks:
-
-Implement an Adaptive Volume Velocity filter based on the VIX.
-
-Implement an Intraday Relative Strength filter.
-
-Develop a composite conviction score to rank setups.
-
 Phase 3: Implement Dynamic Risk
+
 Objective: Link capital allocation directly to signal quality.
 
-Tasks:
-
-Implement dynamic position sizing based on the conviction score.
-
-Add advanced confirmation filters (e.g., Multi-Timeframe alignment).
-
 Phase 4: The Final Frontier (Predictive Modeling)
+
 Objective: Bridge the final performance gap using advanced techniques.
 
-Tasks:
+Section 7: Current Project Status & Immediate Next Steps
+Current Status:
+The project has completed the foundational validation and has implemented a sophisticated, first-generation conviction and risk engine in the simulator_daily_hybrid.py. This includes adaptive slippage, dynamic position sizing, and advanced intraday volume and market filters. While these enhancements have significantly improved the realism of the simulation, they have not yet achieved the target performance metrics. The current version serves as a robust and realistic baseline for further alpha-focused improvements.
 
-Develop a predictive ML filter to identify high-probability setups.
-
-Develop a "Second Chance" protocol to re-enter missed breakouts.
+Immediate Next Steps:
+Based on these findings, the project will continue to execute on the "Strategic Roadmap for Optimization." The immediate focus remains on Phase 2: Sharpen the Alpha & Build Conviction Engine. The goal is to further refine the entry logic of the simulator_daily_hybrid.py. The next planned enhancement is the implementation of an Intraday Relative Strength Filter to ensure the strategy is only entering stocks that are demonstrating strength against the market at the moment of breakout.
