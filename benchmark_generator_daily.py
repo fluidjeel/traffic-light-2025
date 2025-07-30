@@ -1,18 +1,13 @@
 # benchmark_generator_daily.py
 #
 # Description:
-# This script creates the "Golden Benchmark" for the daily strategy. It is a
-# 1:1 logical copy of the original `final_backtester_benchmark_logger.py` with
-# one intentional modification as requested.
+# This script creates the "Golden Benchmark" for the daily strategy.
 #
-# MODIFICATION:
-# 1. Renamed from final_backtester_benchmark_logger.py.
-# 2. ADDITIVE CHANGE: Enhanced logging to include a unique `setup_id` and a
-#    comprehensive `all_setups_log` for validation purposes.
-# 3. BUG FIX: Reverted all logic to be identical to the original script,
-#    including the on-the-fly, post-truncation indicator calculation method.
-# 4. ACCEPTED CHANGE: The setup quality filter `close < midpoint` has been
-#    intentionally removed as requested, making the setup criteria less strict.
+# MODIFICATION (v2.0 - Logging Enhancement):
+# 1. ADDED: A dedicated subdirectory ('benchmark_daily') is now created under
+#    the main log folder for organized report storage.
+# 2. UPDATED: The script configuration now includes a 'strategy_name'
+#    to dynamically create the log folder.
 
 import pandas as pd
 import os
@@ -21,13 +16,14 @@ from datetime import datetime
 import time
 import sys
 
-# --- CONFIGURATION (Identical to final_backtester_benchmark_logger.py) ---
+# --- CONFIGURATION ---
 config = {
     'initial_capital': 1000000,
     'risk_per_trade_percent': 4.0,
     'timeframe': 'daily', 
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
+    'strategy_name': 'benchmark_daily', # For dedicated log folder
     'start_date': '2020-01-01',
     'end_date': '2025-07-16',
     'nifty_list_csv': 'nifty200.csv',
@@ -77,7 +73,10 @@ def run_backtest(cfg):
     start_time = time.time()
     data_folder = os.path.join(cfg['data_folder_base'], cfg['timeframe'])
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs(cfg['log_folder'], exist_ok=True)
+    
+    # --- ENHANCEMENT 1: Create dedicated log folder ---
+    strategy_log_folder = os.path.join(cfg['log_folder'], cfg['strategy_name'])
+    os.makedirs(strategy_log_folder, exist_ok=True)
     
     try:
         symbols = pd.read_csv(cfg['nifty_list_csv'])['Symbol'].tolist()
@@ -154,7 +153,6 @@ def run_backtest(cfg):
                     setup_candle = df.iloc[loc-1]
                     setup_date = setup_candle.name
                     
-                    # --- ACCEPTED CHANGE: The quality filter `close < midpoint` is removed ---
                     if not setup_candle['green_candle']: continue
                         
                     if not (setup_candle['close'] > setup_candle[f"ema_{cfg['ema_period']}"]): continue
@@ -236,16 +234,36 @@ def run_backtest(cfg):
 
     params_str = "INPUT PARAMETERS:\n-----------------\n"
     for key, value in cfg.items(): params_str += f"{key.replace('_', ' ').title()}: {value}\n"
-    summary_content = f"""BACKTEST SUMMARY REPORT (DAILY BENCHMARK)\n================================\n{params_str}\nREALISTIC PERFORMANCE (CAPITAL CONSTRAINED):\n--------------------------------------------\nFinal Equity: {final_equity:,.2f}\nNet P&L: {net_pnl:,.2f}\nCAGR: {cagr:.2f}%\nMax Drawdown: {max_drawdown:.1f}%\nTotal Trade Events (incl. partials): {total_trades}\nWin Rate (of events): {win_rate:.1f}%\nProfit Factor: {profit_factor:.2f}\n\nHYPOTHETICAL PERFORMANCE (UNCONSTRAINED):\n-----------------------------------------\nTotal Setups Found: {len(all_setups_df[all_setups_df['status'].isin(['FILLED', 'MISSED_CAPITAL'])])}\nStrategy Win Rate (per setup): {hypothetical_win_rate:.1f}%\nStrategy Profit Factor (per setup): {hypothetical_profit_factor:.2f}\n"""
+    summary_content = f"""BACKTEST SUMMARY REPORT (DAILY BENCHMARK)
+================================
+{params_str}
+REALISTIC PERFORMANCE (CAPITAL CONSTRAINED):
+--------------------------------------------
+Final Equity: {final_equity:,.2f}
+Net P&L: {net_pnl:,.2f}
+CAGR: {cagr:.2f}%
+Max Drawdown: {max_drawdown:.1f}%
+Total Trade Events (incl. partials): {total_trades}
+Win Rate (of events): {win_rate:.1f}%
+Profit Factor: {profit_factor:.2f}
+
+HYPOTHETICAL PERFORMANCE (UNCONSTRAINED):
+-----------------------------------------
+Total Setups Found: {len(all_setups_df[all_setups_df['status'].isin(['FILLED', 'MISSED_CAPITAL'])])}
+Strategy Win Rate (per setup): {hypothetical_win_rate:.1f}%
+Strategy Profit Factor (per setup): {hypothetical_profit_factor:.2f}
+"""
     
-    summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report_benchmark_daily.txt")
-    trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail_benchmark_daily.csv")
-    all_setups_filename = os.path.join(cfg['log_folder'], f"{timestamp}_all_setups_log_benchmark_daily.csv")
+    # --- UPDATED: Use the new dedicated log folder ---
+    summary_filename = os.path.join(strategy_log_folder, f"{timestamp}_summary_report.txt")
+    trades_filename = os.path.join(strategy_log_folder, f"{timestamp}_trades_detail.csv")
+    all_setups_filename = os.path.join(strategy_log_folder, f"{timestamp}_all_setups_log.csv")
     
     with open(summary_filename, 'w') as f: f.write(summary_content)
     if not trades_df.empty: trades_df.to_csv(trades_filename, index=False)
     if not all_setups_df.empty: all_setups_df.to_csv(all_setups_filename, index=False)
     print(summary_content)
+    print(f"\nReports saved to '{strategy_log_folder}'")
     
 if __name__ == "__main__":
     run_backtest(config)

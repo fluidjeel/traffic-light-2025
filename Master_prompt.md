@@ -1,15 +1,13 @@
-Public Code repo: https://github.com/fluidjeel/traffic-light-2025
+Master Project Context: Nifty 200 Pullback Strategy (Version 4.3)
+To the Large Language Model:
 
-All files are present in the root of the repo. To set deeper context, feel free to ask for any further files if required.
+This is a private, custom algorithmic trading strategy. The information contained in the attached documents is the single source of truth. Do not reference any external code, public GitHub repositories, or general trading knowledge. Your sole objective is to build a complete and accurate mental model of this project based only on the provided files.
 
-Your final task is to summarize your understanding by directly paraphrasing the rules from the "Definitive Trading Strategy Logic" section and the architectural components described. Do not introduce any external concepts or terminology. Your summary must be a precise, factual reflection of the provided materials, proving you have built a mental model based only on the information given. Once I verify you have the full context, we will work together on the next steps.
+Your first task is to fully ingest the context provided below and in the specified file sequence. Once you have built this mental model, your second task is to prove your understanding by directly paraphrasing the rules from the "Definitive Trading Strategy Logic" section and the architectural components described. Do not introduce any external concepts or terminology. Your summary must be a precise, factual reflection of the provided materials.
 
-this is a private custom strategy refer to github for the documentation and relevant files. Attached are further files for better awareness . same is also found in github
-
-_____Context setting starts____
-
-Master Project Context: Nifty 200 Pullback Strategy (Version 4.0)
-Objective: The following document provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
+Context Setting Starts
+Objective:
+The following document provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies.
 
 Section 1: Context Setting - The Required Reading Sequence
 To understand this project, you must study the following files in the precise order listed below. This sequence is designed to build your knowledge from the high-level concept down to the specific implementation details.
@@ -20,11 +18,13 @@ project_code_explained.md: After understanding the master plan, read this file t
 
 project_runbook_operational_guide.md: This document will explain the standard operating procedure for running the entire research pipeline, from data acquisition to analysis.
 
-Core Benchmark & Simulator Scripts: Finally, review the source code of the key scripts.
+Core Benchmark & Simulator Scripts: Finally, review the source code of the key scripts to understand the implementation details.
 
 benchmark_generator_htf.py (The biased, theoretical model)
 
 htf_simulator_advanced.py (The new, state-of-the-art, bias-free simulator)
+
+simulator_daily_hybrid.py (The final, corrected version of the daily simulator)
 
 Section 2: High-Level Project Goal & Philosophy
 2.1. Goal
@@ -43,6 +43,8 @@ Data Processing & Resampling: The calculate_indicators_clean.py script acts as t
 Benchmark Generation: The benchmark_generator_* scripts run the strategies with intentional lookahead bias to establish the theoretical "perfect" performance.
 
 Realistic Simulation: The simulator_* scripts, particularly the new htf_simulator_advanced.py, run the strategies in a bias-free manner to replicate real-world trading conditions.
+
+Standardized Logging Architecture (New): A key enhancement has been implemented across all backtesting scripts. Each script now saves its output logs to a dedicated, clearly named subdirectory within backtest_logs (e.g., backtest_logs/simulator_htf_advanced/). This is controlled by the strategy_name key in each script's configuration and ensures all analytical files are organized and easily accessible.
 
 Section 4: The Definitive and Exclusive Trading Strategy Logic
 4.1. The HTF Strategy
@@ -65,6 +67,7 @@ Entry Conditions (on the Day of the Daily Breakout):
 The benchmark applies EOD filters (Market Regime, Volume, RS) with lookahead bias. The realistic simulator replaces these with a bias-free intraday conviction engine.
 
 4.2. Universal Trade Management Rules
+
 Initial Stop-Loss: The lowest low of the 5 daily candles preceding the entry day.
 
 Partial Profit Target: A risk/reward target is set. If hit, half the position is sold, and the stop-loss is moved to breakeven.
@@ -92,7 +95,7 @@ Integrated Portfolio Risk Gate: The size of a new position is calculated based o
 Dynamic Profit Target: The simulator includes a dynamic profit target that sets a more conservative 1:1 RR target in high-VIX markets and a more aggressive 1.5:1 RR target in calm markets.
 
 Section 6: Current Project Status & Immediate Next Steps
-Current Status: The project has successfully developed the htf_simulator_advanced.py, a robust, bias-free engine for the HTF strategy. However, initial backtests, while logically sound from a lookahead perspective, have produced unrealistically high returns. Analysis has concluded this is due to two major systemic flaws in the current backtesting environment.
+Current Status: The project has successfully developed and enhanced its core backtesting simulators (htf_simulator_advanced.py and simulator_daily_hybrid.py) with robust, bias-free engines and a standardized logging system. However, initial backtests, while logically sound from a lookahead perspective, have produced unrealistically high returns. Analysis has concluded this is due to two major systemic flaws in the current backtesting environment.
 
 Immediate Next Steps: The project's primary focus has shifted. The goal is no longer to add more entry filters, but to fix the foundational issues that are inflating performance. The next steps are:
 
@@ -100,4 +103,4 @@ Implement a Transaction Cost Model: Integrate a realistic cost model into the si
 
 Mitigate Survivorship Bias: Research and implement a solution for using point-in-time historical index constituents instead of a static nifty200.csv file. This is the highest priority for achieving trustworthy backtest results.
 
-_____Context setting ends
+Context Setting Ends

@@ -1,15 +1,13 @@
 # benchmark_generator_htf.py
 #
 # Description:
-# This script creates the "Golden Benchmark" for the HTF strategy. It is a 1:1
-# logical copy of its original version to ensure correct performance results.
+# This script creates the "Golden Benchmark" for the HTF strategy.
 #
-# MODIFICATION:
-# 1. Renamed from final_backtester_immediate_benchmark_htf.py.
-# 2. ADDITIVE CHANGE: Enhanced logging to include a unique `setup_id` and a
-#    comprehensive `all_setups_log` for validation purposes.
-# 3. BUG FIX: Reverted all logic to be identical to the original script,
-#    including all core setup quality filters, data handling, and stop-loss logic.
+# MODIFICATION (v2.0 - Logging Enhancement):
+# 1. ADDED: A dedicated subdirectory ('benchmark_htf') is now created under
+#    the main log folder for organized report storage.
+# 2. UPDATED: The script configuration now includes a 'strategy_name'
+#    to dynamically create the log folder.
 
 import pandas as pd
 import os
@@ -25,6 +23,7 @@ config = {
     'timeframe': 'weekly-immediate',
     'data_folder_base': 'data/processed',
     'log_folder': 'backtest_logs',
+    'strategy_name': 'benchmark_htf', # For dedicated log folder
     'start_date': '2020-01-01',
     'end_date': '2025-07-16',
     'nifty_list_csv': 'nifty200.csv',
@@ -43,7 +42,6 @@ config = {
 }
 
 def get_consecutive_red_candles(df, current_loc):
-    # --- ORIGINAL LOGIC RESTORED ---
     red_candles = []
     i = current_loc - 2
     while i >= 0 and df.iloc[i]['red_candle']:
@@ -77,16 +75,24 @@ def run_backtest(cfg):
     base_timeframe = cfg['timeframe'].replace('-immediate', '')
     data_folder_htf = os.path.join(cfg['data_folder_base'], base_timeframe)
     data_folder_daily = os.path.join(cfg['data_folder_base'], 'daily')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S"); os.makedirs(cfg['log_folder'], exist_ok=True)
-    try: symbols = pd.read_csv(cfg['nifty_list_csv'])['Symbol'].tolist()
-    except FileNotFoundError: print(f"Error: Symbol file not found at {cfg['nifty_list_csv']}"); return
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # --- ENHANCEMENT 1: Create dedicated log folder ---
+    strategy_log_folder = os.path.join(cfg['log_folder'], cfg['strategy_name'])
+    os.makedirs(strategy_log_folder, exist_ok=True)
+    
+    try: 
+        symbols = pd.read_csv(cfg['nifty_list_csv'])['Symbol'].tolist()
+    except FileNotFoundError: 
+        print(f"Error: Symbol file not found at {cfg['nifty_list_csv']}"); return
     
     index_df_daily = None
     try:
         index_path = os.path.join(data_folder_daily, f"{cfg['regime_index_symbol']}_daily_with_indicators.csv")
         index_df_daily = pd.read_csv(index_path, index_col='datetime', parse_dates=True)
         index_df_daily.rename(columns=lambda x: x.lower(), inplace=True)
-    except FileNotFoundError: cfg['market_regime_filter'], cfg['rs_filter'] = False, False
+    except FileNotFoundError: 
+        cfg['market_regime_filter'], cfg['rs_filter'] = False, False
 
     stock_data_daily, stock_data_htf = {}, {}
     for symbol in symbols:
@@ -98,7 +104,10 @@ def run_backtest(cfg):
         if os.path.exists(htf_path):
             df_h = pd.read_csv(htf_path, index_col='datetime', parse_dates=True)
             df_h.rename(columns=lambda x: x.lower(), inplace=True)
-            if not df_h.empty: df_h['red_candle'], df_h['green_candle'] = df_h['close'] < df_h['open'], df_h['close'] > df_h['open']; stock_data_htf[symbol] = df_h
+            if not df_h.empty: 
+                df_h['red_candle'] = df_h['close'] < df_h['open']
+                df_h['green_candle'] = df_h['close'] > df_h['open']
+                stock_data_htf[symbol] = df_h
 
     portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
     all_setups_log = []
@@ -230,16 +239,36 @@ def run_backtest(cfg):
 
     params_str = "INPUT PARAMETERS:\n-----------------\n"
     for key, value in cfg.items(): params_str += f"{key.replace('_', ' ').title()}: {value}\n"
-    summary_content = f"""BACKTEST SUMMARY REPORT (HTF BENCHMARK)\n================================\n{params_str}\nREALISTIC PERFORMANCE (CAPITAL CONSTRAINED):\n--------------------------------------------\nFinal Equity: {final_equity:,.2f}\nNet P&L: {net_pnl:,.2f}\nCAGR: {cagr:.2f}%\nMax Drawdown: {max_drawdown:.1f}%\nTotal Trade Events (incl. partials): {total_trades}\nWin Rate (of events): {win_rate:.1f}%\nProfit Factor: {profit_factor:.2f}\n\nHYPOTHETICAL PERFORMANCE (UNCONSTRAINED):\n-----------------------------------------\nTotal Setups Found: {len(all_setups_df[all_setups_df['status'].isin(['FILLED', 'MISSED_CAPITAL'])])}\nStrategy Win Rate (per setup): {hypothetical_win_rate:.1f}%\nStrategy Profit Factor (per setup): {hypothetical_profit_factor:.2f}\n"""
+    summary_content = f"""BACKTEST SUMMARY REPORT (HTF BENCHMARK)
+================================
+{params_str}
+REALISTIC PERFORMANCE (CAPITAL CONSTRAINED):
+--------------------------------------------
+Final Equity: {final_equity:,.2f}
+Net P&L: {net_pnl:,.2f}
+CAGR: {cagr:.2f}%
+Max Drawdown: {max_drawdown:.1f}%
+Total Trade Events (incl. partials): {total_trades}
+Win Rate (of events): {win_rate:.1f}%
+Profit Factor: {profit_factor:.2f}
+
+HYPOTHETICAL PERFORMANCE (UNCONSTRAINED):
+-----------------------------------------
+Total Setups Found: {len(all_setups_df[all_setups_df['status'].isin(['FILLED', 'MISSED_CAPITAL'])])}
+Strategy Win Rate (per setup): {hypothetical_win_rate:.1f}%
+Strategy Profit Factor (per setup): {hypothetical_profit_factor:.2f}
+"""
     
-    summary_filename = os.path.join(cfg['log_folder'], f"{timestamp}_summary_report_benchmark_htf.txt")
-    trades_filename = os.path.join(cfg['log_folder'], f"{timestamp}_trades_detail_benchmark_htf.csv")
-    all_setups_filename = os.path.join(cfg['log_folder'], f"{timestamp}_all_setups_log_benchmark_htf.csv")
+    # --- UPDATED: Use the new dedicated log folder ---
+    summary_filename = os.path.join(strategy_log_folder, f"{timestamp}_summary_report.txt")
+    trades_filename = os.path.join(strategy_log_folder, f"{timestamp}_trades_detail.csv")
+    all_setups_filename = os.path.join(strategy_log_folder, f"{timestamp}_all_setups_log.csv")
     
     with open(summary_filename, 'w') as f: f.write(summary_content)
     if not trades_df.empty: trades_df.to_csv(trades_filename, index=False)
     if not all_setups_df.empty: all_setups_df.to_csv(all_setups_filename, index=False)
     print(summary_content)
+    print(f"\nReports saved to '{strategy_log_folder}'")
     
 if __name__ == "__main__":
     run_backtest(config)
