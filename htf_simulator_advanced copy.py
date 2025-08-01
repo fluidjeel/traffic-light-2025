@@ -4,16 +4,14 @@
 # This is the new, state-of-the-art, bias-free backtesting simulator for the
 # Nifty 200 HTF (Higher Timeframe) Pullback Strategy.
 #
-# MODIFICATION (v4.0 - Flexible Trade Management):
-# 1. ADDED: A new 'exit_strategy_mode' to the config, allowing a choice between
-#    the original 'TRAILING' logic and a new, simpler 'ATR_TARGET' exit model.
-# 2. ADDED: A new 'stop_loss_mode' to the config, allowing a choice between
-#    the original 'LOOKBACK' low and a fixed 'PERCENT' based stop-loss.
-# 3. ENHANCED: The summary report now logs the complete configuration used for
-#    the backtest run, ensuring full reproducibility.
+# MODIFICATION (v5.0 - Simplified Exit Logic):
+# 1. REMOVED: The experimental 'ATR_TARGET' exit strategy and its associated
+#    configuration toggles have been removed to improve code clarity and focus
+#    on the proven, more effective 'TRAILING' stop-loss mechanism.
 #
-# MODIFICATION (v3.1 - MAE Logging Enhancement):
-# 1. ADDED: Logic to track and log the Maximum Adverse Excursion (MAE).
+# MODIFICATION (v4.0 - Flexible Trade Management):
+# 1. ADDED: A 'stop_loss_mode' to the config, allowing a choice between
+#    the original 'LOOKBACK' low and a fixed 'PERCENT' based stop-loss.
 
 import pandas as pd
 import os
@@ -65,10 +63,7 @@ config = {
     'high_vol_slippage_percent': 0.15,
     'use_intraday_rs_filter': True,
 
-    # --- Trade Management & Profit Taking ---
-    'exit_strategy_mode': 'TRAILING',       # Options: 'TRAILING' or 'ATR_TARGET'
-
-    # -- Settings for 'TRAILING' mode --
+    # --- Trade Management & Profit Taking (Trailing Logic) ---
     'use_partial_profit_leg': True,
     'use_dynamic_profit_target': True,
     'profit_target_rr_calm': 1.5,
@@ -76,13 +71,9 @@ config = {
     'use_aggressive_breakeven': True,
     'breakeven_buffer_points': 0.05,
 
-    # -- Settings for 'ATR_TARGET' mode --
-    'atr_profit_target_multiple': 3.0,      # e.g., exit at entry + (3 * weekly_atr)
-    'atr_period_weekly': 14,                # The ATR period to use for the target
-
-    # -- Stop-Loss Configuration (Applies to both modes) --
+    # -- Stop-Loss Configuration --
     'stop_loss_mode': 'LOOKBACK',           # Options: 'LOOKBACK' or 'PERCENT'
-    'fixed_stop_loss_percent': 0.07,        # e.g., 9%
+    'fixed_stop_loss_percent': 0.09,        # e.g., 9%
     'stop_loss_lookback_days': 5,
 }
 
@@ -200,12 +191,6 @@ class HtfAdvancedSimulator:
 
                 setup_details = {'trigger_price': trigger_price, 'target_daily_volume': target_daily_volume, 'setup_id': f"{symbol}_{setup_candle.name.strftime('%Y-%m-%d')}"}
                 
-                if self.cfg.get('exit_strategy_mode') == 'ATR_TARGET':
-                    weekly_atr = setup_candle.get(f"atr_{self.cfg['atr_period_weekly']}")
-                    if pd.notna(weekly_atr):
-                        setup_details['weekly_atr'] = weekly_atr
-                    else: continue # Skip setup if ATR is not available for this mode
-
                 for i in range(1, 6):
                     next_day = friday_date + timedelta(days=i)
                     next_day_str = next_day.strftime('%Y-%m-%d')
@@ -284,15 +269,10 @@ class HtfAdvancedSimulator:
         risk_per_share = entry_price - stop_loss
         if risk_per_share <= 0: return
 
-        if self.cfg.get('exit_strategy_mode') == 'ATR_TARGET':
-            weekly_atr = details.get('weekly_atr', 0)
-            if weekly_atr == 0: return # Cannot set target without ATR
-            target_price = entry_price + (weekly_atr * self.cfg['atr_profit_target_multiple'])
-        else: # Default to 'TRAILING'
-            profit_target_rr = self.cfg['profit_target_rr_calm']
-            if self.cfg['use_dynamic_profit_target'] and vix_close > self.cfg['vix_high_threshold']:
-                profit_target_rr = self.cfg['profit_target_rr_high']
-            target_price = entry_price + (risk_per_share * profit_target_rr)
+        profit_target_rr = self.cfg['profit_target_rr_calm']
+        if self.cfg['use_dynamic_profit_target'] and vix_close > self.cfg['vix_high_threshold']:
+            profit_target_rr = self.cfg['profit_target_rr_high']
+        target_price = entry_price + (risk_per_share * profit_target_rr)
 
         if self.cfg['use_dynamic_position_sizing']:
             active_risk = sum([(p['entry_price'] - p['stop_loss']) * p['shares'] for p in self.portfolio['positions'].values()])
@@ -324,61 +304,42 @@ class HtfAdvancedSimulator:
             except (KeyError, IndexError):
                 continue
 
-            # --- NEW: Conditional Exit Logic ---
-            if self.cfg.get('exit_strategy_mode') == 'ATR_TARGET':
-                # Simplified logic for ATR_TARGET mode
-                exit_price, exit_type = 0, None
-                if candle['high'] >= pos['target']:
-                    exit_price, exit_type = pos['target'], 'ATR Target'
-                elif candle['low'] <= pos['stop_loss']:
-                    exit_price, exit_type = pos['stop_loss'], 'Stop-Loss'
-                
-                if exit_type:
-                    exit_proceeds += pos['shares'] * exit_price
-                    mae_price = pos['lowest_price_since_entry']
-                    mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
-                    trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * pos['shares'], 'exit_type': exit_type, 'mae_price': mae_price, 'mae_percent': mae_percent})
-                    self.portfolio['trades'].append(trade_log)
-                    to_remove.append(pos_id)
-            else: # Original 'TRAILING' logic
-                if self.cfg['use_partial_profit_leg'] and not pos.get('partial_exit', False) and candle['high'] >= pos['target']:
-                    shares_to_sell = pos['shares'] // 2
-                    exit_price = pos['target']
-                    exit_proceeds += shares_to_sell * exit_price
-                    mae_price = pos['lowest_price_since_entry']
-                    mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
-                    trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * shares_to_sell, 'exit_type': 'Partial Profit', 'mae_price': mae_price, 'mae_percent': mae_percent})
-                    self.portfolio['trades'].append(trade_log)
-                    pos['shares'] -= shares_to_sell
-                    pos['partial_exit'] = True
-                    pos['stop_loss'] = pos['entry_price']
+            if self.cfg['use_partial_profit_leg'] and not pos.get('partial_exit', False) and candle['high'] >= pos['target']:
+                shares_to_sell = pos['shares'] // 2
+                exit_price = pos['target']
+                exit_proceeds += shares_to_sell * exit_price
+                mae_price = pos['lowest_price_since_entry']
+                mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
+                trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * shares_to_sell, 'exit_type': 'Partial Profit', 'mae_price': mae_price, 'mae_percent': mae_percent})
+                self.portfolio['trades'].append(trade_log)
+                pos['shares'] -= shares_to_sell
+                pos['partial_exit'] = True
+                pos['stop_loss'] = pos['entry_price']
 
-                if pos['shares'] > 0 and candle['low'] <= pos['stop_loss']:
-                    exit_price = pos['stop_loss']
-                    exit_proceeds += pos['shares'] * exit_price
-                    mae_price = pos['lowest_price_since_entry']
-                    mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
-                    trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', 'mae_price': mae_price, 'mae_percent': mae_percent})
-                    self.portfolio['trades'].append(trade_log)
-                    to_remove.append(pos_id)
+            if pos['shares'] > 0 and candle['low'] <= pos['stop_loss']:
+                exit_price = pos['stop_loss']
+                exit_proceeds += pos['shares'] * exit_price
+                mae_price = pos['lowest_price_since_entry']
+                mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
+                trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', 'mae_price': mae_price, 'mae_percent': mae_percent})
+                self.portfolio['trades'].append(trade_log)
+                to_remove.append(pos_id)
         
         for pos_id in to_remove:
             self.portfolio['positions'].pop(pos_id, None)
         self.portfolio['cash'] += exit_proceeds
 
     def manage_eod_portfolio(self, date):
-        # EOD management only applies to the 'TRAILING' strategy
-        if self.cfg.get('exit_strategy_mode', 'TRAILING') == 'TRAILING':
-            for pos in self.portfolio['positions'].values():
-                if date in self.daily_data.get(pos['symbol'], pd.DataFrame()).index:
-                    daily_candle = self.daily_data[pos['symbol']].loc[date]
-                    new_stop = pos['stop_loss']
-                    if daily_candle['close'] > pos['entry_price']:
-                        if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
-                            new_stop = max(new_stop, pos['entry_price'] + self.cfg['breakeven_buffer_points'])
-                        if daily_candle['close'] > daily_candle['open']:
-                            new_stop = max(new_stop, daily_candle['low'])
-                    pos['stop_loss'] = new_stop
+        for pos in self.portfolio['positions'].values():
+            if date in self.daily_data.get(pos['symbol'], pd.DataFrame()).index:
+                daily_candle = self.daily_data[pos['symbol']].loc[date]
+                new_stop = pos['stop_loss']
+                if daily_candle['close'] > pos['entry_price']:
+                    if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
+                        new_stop = max(new_stop, pos['entry_price'] + self.cfg['breakeven_buffer_points'])
+                    if daily_candle['close'] > daily_candle['open']:
+                        new_stop = max(new_stop, daily_candle['low'])
+                pos['stop_loss'] = new_stop
         
         eod_equity = self.portfolio['cash']
         for pos in self.portfolio['positions'].values():

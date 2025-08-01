@@ -1,4 +1,4 @@
-Master Project Context: Nifty 200 Pullback Strategy (Version 4.4)
+Master Project Context: Nifty 200 Pullback Strategy (Version 4.5)
 Objective: The following document provides a comprehensive, explicit, and highly contextualized overview of a Python-based algorithmic trading project. Your goal is to fully ingest this document and the specified files in the correct sequence to build a complete and accurate mental model of the project's architecture, data flow, and the precise logic of its trading strategies. Do not assume any prior knowledge; this document and the files it references are the single source of truth.
 
 Section 1: High-Level Project Goal & Philosophy
@@ -22,7 +22,7 @@ Realistic Simulation: The simulator_* scripts run the strategies in a bias-free 
 Validation & Analysis: The validate_*_subset.py scripts are used to prove that the simulators are logically aligned with their benchmarks. A new mae_analyzer.py script has been developed for advanced, data-driven stop-loss optimization.
 
 2.1. Standardized Logging Architecture
-A key enhancement has been implemented across all backtesting scripts. Each script now automatically creates a dedicated subdirectory within the backtest_logs folder (e.g., backtest_logs/simulator_monthly_advanced/). This is controlled by the strategy_name key in each script's config dictionary. The realistic simulators have been further enhanced with a toggleable, granular logging system that can produce detailed reports on filled trades, missed trades, and setups rejected by intraday filters. This includes logging for Maximum Adverse Excursion (MAE) to facilitate deep performance analysis.
+A key enhancement has been implemented across all backtesting scripts. Each script now automatically creates a dedicated subdirectory within the backtest_logs folder (e.g., backtest_logs/simulator_monthly_advanced/). This is controlled by the strategy_name key in each script's config dictionary. The realistic simulators have been further enhanced with a toggleable, granular logging system that can produce detailed reports on filled trades, missed trades, and setups rejected by intraday filters. This includes logging for Maximum Adverse Excursion (MAE) and saving the entire configuration dictionary with each summary report to ensure full reproducibility.
 
 Section 3: The Definitive and Exclusive Trading Strategy Logic
 3.1. The Daily Strategy (as defined in benchmark_generator_daily.py)
@@ -82,18 +82,34 @@ Daily Breakout Confirmation:
 
 After identifying a valid monthly pattern, the system waits for a daily candle's high within the subsequent month to cross above the high of the monthly pattern.
 
-3.4. Universal Trade Management Rules
-Initial Stop-Loss: Defined by the specific strategy.
+3.4. Universal Trade Management Rules (Enhanced & Configurable)
+The simulators now feature a highly flexible, toggle-driven system for managing trades.
 
-Daily/Weekly: The lowest low of the 5 daily candles preceding the entry day.
+Initial Stop-Loss: The initial risk is defined by the stop_loss_mode config parameter:
 
-Monthly: A volatility-adjusted stop based on the 6-month ATR (entry_price - (monthly_atr * atr_multiplier)).
+LOOKBACK mode: Sets the stop at the lowest low of a specified number of preceding daily candles (e.g., 5 days for the weekly strategy).
 
-Partial Profit Target: A risk/reward target is set. If hit, a portion of the position may be sold, and the stop-loss is moved to breakeven.
+PERCENT mode: Sets the stop at a fixed percentage below the entry price (e.g., 9%).
 
-Trailing Stop-Loss: For the remaining position, the stop is trailed under the low of any subsequent green daily candle.
+ATR mode (Monthly only): Sets the stop at a multiple of the 6-month Average True Range below the entry price.
 
-Aggressive Breakeven: An optional rule that moves the stop-loss to just above the entry price as soon as a trade is profitable, aiming to turn potential small losses into small wins.
+Profit Target & Exit Strategy: The overall exit logic is controlled by the exit_strategy_mode config parameter:
+
+TRAILING mode (Default for HTF): This is a complex, multi-stage exit strategy.
+
+An initial profit target is set based on a Risk:Reward multiple of the initial stop-loss.
+
+If use_partial_profit_leg is True, half the position is sold when this target is hit.
+
+The stop-loss for the remaining position is then moved to breakeven and subsequently trailed under the low of any new green daily candle.
+
+ATR_TARGET mode (New option for HTF): This is a simpler, binary exit strategy.
+
+A single profit target is calculated based on a multiple of the weekly ATR (e.g., entry_price + (3 * weekly_atr)).
+
+The trade is exited in full if either the initial stop-loss or this ATR-based profit target is hit. All trailing logic is disabled in this mode.
+
+Aggressive Breakeven: An optional rule that moves the stop-loss to just above the entry price as soon as a trade is profitable.
 
 Section 4: Strategy Timeline and Execution Flow
 This section describes the practical, time-based sequence of events for each strategy as implemented in the bias-free simulators.
@@ -102,7 +118,7 @@ This section describes the practical, time-based sequence of events for each str
 This strategy operates on a two-day cycle: setup identification on Day T-1 and potential execution on Day T.
 
 After Market Close on Day T-1:
-The system scans the daily charts for the core pullback pattern and applies EOD quality filters (market trend, volume, relative strength) to generate a "Watchlist" for the next day.
+The system scans the daily charts for the core pullback pattern and applies EOD quality filters to generate a "Watchlist" for the next day.
 
 During the Trading Day on Day T:
 The system monitors the 15-minute data for stocks on the Watchlist. When a stock breaks its trigger price, it runs the real-time "Advanced Conviction & Risk Engine" before executing a trade.
@@ -120,18 +136,18 @@ The Sniper monitors the 15-minute data for stocks on the Target List. When a bre
 This strategy adapts the Scout/Sniper model for a much longer timeframe.
 
 After Market Close on the Last Trading Day of the Month (The "Scout" Mission):
-The Scout scans the monthly charts for the core pullback pattern. It applies quality filters (e.g., volume, trend) and generates a "Target List" valid for the entire next month.
+The Scout scans the monthly charts for the core pullback pattern. It applies quality filters and generates a "Target List" valid for the entire next month.
 
 During the Following Month (The "Sniper" Mission):
-The Sniper monitors the Target List intraday. Due to the long-term nature of the setup, it operates within an Adaptive Execution Window, typically ignoring the first few volatile days of the month and then monitoring for a set period (e.g., 15 trading days) for a breakout. When a breakout occurs, it is validated against the Conviction Engine.
+The Sniper monitors the Target List intraday. It operates within an Adaptive Execution Window, typically ignoring the first few volatile days of the month and then monitoring for a set period for a breakout, which is then validated against the Conviction Engine.
 
 Section 5: The Bias-Free Simulators & Core Engines
 5.1. The Simulators
 simulator_daily_hybrid.py: The advanced simulator for the daily strategy.
 
-htf_simulator_advanced.py: The flagship simulator for the weekly HTF strategy.
+htf_simulator_advanced.py: The flagship simulator for the weekly HTF strategy. This script is now highly flexible, featuring toggleable modes for both the initial stop-loss (LOOKBACK vs. PERCENT) and the overall exit strategy (TRAILING vs. ATR_TARGET).
 
-simulator_monthly_advanced.py: The new, state-of-the-art simulator for the monthly strategy, featuring unique adaptations like a volatility-adjusted stop-loss and an adaptive execution window.
+simulator_monthly_advanced.py: The new, state-of-the-art simulator for the monthly strategy, featuring unique adaptations like a configurable stop-loss mode (ATR vs. PERCENT) and a custom profit-taking mode.
 
 5.2. The Advanced Conviction & Risk Engine
 This engine is a core component of all advanced simulators. It is a suite of bias-free, intraday filters used to validate entry signals.
@@ -142,7 +158,7 @@ VIX-Adaptive Market Strength & Slippage: Adjusts market health thresholds and sl
 
 Intraday Relative Strength (RS) Filter: Compares the stock's intraday performance against the index's performance at the moment of breakout.
 
-Integrated Portfolio Risk Gate: Calculates position size based on both per-trade risk and total portfolio risk exposure.
+Integrated Portfolio Risk Gate: Calculates position size based on both per-trade risk and total portfolio risk exposure, using the settled equity from the start of the day to prevent using unrealized profits as leverage. This is a critical calculation integrity feature.
 
 Section 6: Strategic Roadmap & Current Status
 6.1. Strategic Roadmap
@@ -187,7 +203,7 @@ Actionable Insights: Use the analysis to refine risk parameters and for psycholo
 
 Objective: To identify the specific market environments where the strategy thrives and where it struggles.
 
-Actionable Insights: Implement a master "regime filter" to disable the strategy during unfavorable market conditions (e.g., Nifty 200 below its 200-day moving average) or dynamically adjust position sizing based on the regime.
+Actionable Insights: Implement a master "regime filter" to disable the strategy during unfavorable market conditions or dynamically adjust position sizing based on the regime.
 
 ✅ 5. Portfolio Construction & Correlation Analysis
 
@@ -202,7 +218,7 @@ Sector Exposure Caps: Set a hard limit on the capital allocated to any single ma
 Correlation-Based Diversification: Reject new trades that are too highly correlated with existing open positions.
 
 6.3. Current Project Status & Immediate Next Steps
-Current Status: The project has successfully developed a suite of robust, bias-free simulators for daily, weekly, and monthly timeframes, complete with a standardized and detailed logging system. The immediate focus remains on addressing the foundational backtesting flaws before moving to the advanced analysis phase.
+Current Status: The project has successfully developed a suite of robust, bias-free simulators for daily, weekly, and monthly timeframes, complete with a standardized and detailed logging system. The calculation integrity of the position sizing logic has been corrected across all simulators. The immediate focus remains on addressing the foundational backtesting flaws before moving to the advanced analysis phase.
 
 Immediate Next Steps:
 

@@ -39,7 +39,7 @@ Intraday Monitoring (Day T): On the next trading day, it monitors the 15-minute 
 Advanced Conviction & Risk Engine: Before executing a trade, it validates the breakout against a series of bias-free checks, including Time-Anchored Volume Projection and VIX-Adaptive Market Strength.
 
 htf_simulator_advanced.py (Flagship Weekly Simulator)
-Importance: This is the state-of-the-art, bias-free backtester for the HTF (weekly) strategy.
+Importance: This is the state-of-the-art, bias-free backtester for the HTF (weekly) strategy, now featuring a highly flexible and robust risk management system.
 
 Accomplishment: It uses a "Scout and Sniper" architecture to cleanly separate the process of identifying a weekly setup from the decision to enter a trade. It implements the full suite of advanced conviction filters and saves all its output logs to a dedicated strategy folder (simulator_htf_advanced/).
 
@@ -48,6 +48,12 @@ Critical Logic & Workflow (Scout and Sniper):
 Scout Mission (EOD Friday): The Scout runs only once a week, after the market closes on Friday. It scans the weekly data to find valid pullback patterns and generates a "Target List" which is then valid for the entire following week.
 
 Sniper Mission (Intraday, Monday-Friday): The Sniper monitors the 15-minute data stream for only the stocks on the weekly Target List and validates any breakout using the full Advanced Conviction & Risk Engine.
+
+Flexible Trade Management (New):
+
+stop_loss_mode: This configuration toggle allows the researcher to choose between two initial stop-loss methods: 'LOOKBACK' (the original method, using the lowest low of the last 5 days) or 'PERCENT' (a fixed percentage below the entry price).
+
+Calculation Integrity: The position sizing logic has been corrected to use the portfolio's equity from the start of the day (equity_at_sod), preventing unrealized profits from being used as leverage and ensuring realistic compounding.
 
 simulator_monthly_advanced.py (New Monthly Simulator)
 Importance: This is the new, state-of-the-art simulator for the Monthly Pullback Strategy, adapting the successful Scout/Sniper architecture for a much longer timeframe.
@@ -60,7 +66,9 @@ Scout Mission (EOD, Last Trading Day of Month): The Scout runs only once a month
 
 Sniper Mission (Intraday, Full Month): The Sniper monitors the Target List intraday, but operates within an Adaptive Execution Window. It typically skips the first few volatile days of the month and then actively monitors for a set period (e.g., 15 trading days), which can be extended during high-VIX periods.
 
-Volatility-Adjusted Stop-Loss: A key innovation for this timeframe. The initial stop-loss is not based on a fixed daily lookback. Instead, it is calculated dynamically using the stock's 6-month Average True Range (ATR), providing a volatility-normalized risk buffer appropriate for a long-term trade.
+Volatility-Adjusted Stop-Loss: A key innovation for this timeframe. The initial stop-loss is calculated dynamically using the stock's 6-month Average True Range (ATR), providing a volatility-normalized risk buffer appropriate for a long-term trade.
+
+Custom Risk Model: Features a toggleable 'profit_target_mode' that allows the profit target to be based on the wide ATR-based risk even when the actual stop-loss is a tighter, fixed percentage, enabling a unique "homerun" seeking methodology.
 
 4. Validation & Analysis Scripts
 validate_*_subset.py
@@ -77,10 +85,10 @@ Accomplishment: It ingests one or more _trade_details.csv log files and analyzes
 
 Critical Logic & Features:
 
-Two Modes of Operation: It can run in a default mode, scanning and analyzing all trade logs in a specified directory, or in a file-specific mode to analyze a single backtest run.
+Multi-Strategy Support: A --strategy flag allows it to correctly parse logs from either the htf or monthly simulators.
 
 Correlation with Summary: It automatically finds and displays the original performance metrics from the corresponding _summary.txt file, providing crucial context for the analysis.
 
 Holistic Analysis: It provides both a per-file analysis and a combined, holistic analysis of all trades from all supplied files.
 
-Data-Driven Recommendation: Based on the analysis, it generates a plain-English recommendation for an optimal stop-loss range, highlighting the "sweet spot" that best balances cutting losses while preserving the majority of winning trades.
+Smarter Recommendation: It uses a "Safe Zone" heuristic to provide a data-driven recommendation. It finds the tightest possible stop-loss that still preserves at least 95% of the original winning trades, identifying the most efficient risk-reward trade-off.
