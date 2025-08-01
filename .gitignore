@@ -14,13 +14,14 @@ fyers_access_token.txt
 
 # Data Folders
 # These folders can contain large amounts of data and should not be versioned.
-historical_data/
+#historical_data/
 weekly_data/
 monthly_data/
 daily_with_indicators/
 weekly_with_indicators/
 monthly_with_indicators/
 backtest_logs/
+#historical_data_15min
 
 
 # IDE and Editor specific
@@ -31,5 +32,5 @@ backtest_logs/
 .DS_Store
 Thumbs.db
 
-*.csv
+#*.csv
 *.log
