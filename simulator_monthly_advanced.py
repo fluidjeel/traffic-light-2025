@@ -59,7 +59,7 @@ config = {
 
     # --- Portfolio & Risk Management ---
     'use_dynamic_position_sizing': True,
-    'risk_per_trade_percent': 2.0,
+    'risk_per_trade_percent': 4.0,
     'max_portfolio_risk_percent': 15.0,
     'max_new_positions_per_day': 6,
 
