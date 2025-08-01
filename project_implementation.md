@@ -143,7 +143,7 @@ The Sniper monitors the Target List intraday. It operates within an Adaptive Exe
 
 Section 5: The Bias-Free Simulators & Core Engines
 5.1. The Simulators
-simulator_daily_hybrid.py: The advanced simulator for the daily strategy.
+simulator_daily_hybrid.py: The advanced simulator for the daily strategy, now enhanced with flexible stop-loss modes and full MAE logging.
 
 htf_simulator_advanced.py: The flagship simulator for the weekly HTF strategy. This script is now highly flexible, featuring toggleable modes for both the initial stop-loss (LOOKBACK vs. PERCENT) and the overall exit strategy (TRAILING vs. ATR_TARGET).
 

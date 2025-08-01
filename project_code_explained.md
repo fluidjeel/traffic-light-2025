@@ -53,6 +53,8 @@ Flexible Trade Management (New):
 
 stop_loss_mode: This configuration toggle allows the researcher to choose between two initial stop-loss methods: 'LOOKBACK' (the original method, using the lowest low of the last 5 days) or 'PERCENT' (a fixed percentage below the entry price).
 
+exit_strategy_mode: This toggle allows switching between the complex, multi-stage 'TRAILING' exit logic and a simpler, binary 'ATR_TARGET' exit model.
+
 Calculation Integrity: The position sizing logic has been corrected to use the portfolio's equity from the start of the day (equity_at_sod), preventing unrealized profits from being used as leverage and ensuring realistic compounding.
 
 simulator_monthly_advanced.py (New Monthly Simulator)
