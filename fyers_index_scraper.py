@@ -1,9 +1,11 @@
-# fyers_index_scraper.py
+# fyers_equity_scraper.py
 #
 # Description:
-# This script intelligently downloads and updates historical daily data for a
-# predefined list of market indices (e.g., Nifty 200, India VIX). It fetches
-# data in 6-month batches to handle long date ranges and avoid API limits.
+# This script intelligently downloads and updates historical daily data for all
+# stocks in the Nifty 200 index. It fetches data in 6-month batches to
+# handle long date ranges and avoid API limits.
+#
+# MODIFICATION: Added logic to drop duplicate index entries before saving.
 
 import os
 import sys
@@ -140,19 +142,20 @@ if __name__ == "__main__":
         output_dir = "historical_data"
         os.makedirs(output_dir, exist_ok=True)
 
-        # --- MODIFIED: Hardcoded dictionary for indices ---
-        indices_to_scrape = {
-            "NIFTY200_INDEX": "NSE:NIFTY200-INDEX",
-            "INDIAVIX": "NSE:INDIAVIX-INDEX"
-        }
+        try:
+            stock_list_df = pd.read_csv("nifty200.csv")
+            symbols = stock_list_df["Symbol"].tolist()
+        except FileNotFoundError:
+            print("Error: 'nifty200.csv' not found. Please make sure the file is in the same directory.")
+            sys.exit()
 
-        total_indices = len(indices_to_scrape)
-        print(f"\nFound {total_indices} indices to process.")
+        total_stocks = len(symbols)
+        print(f"\nFound {total_stocks} stocks to process.")
 
-        for i, (index_name, fyers_symbol) in enumerate(indices_to_scrape.items()):
-            print(f"\nProcessing {index_name} ({i+1}/{total_indices})...")
+        for i, symbol_name in enumerate(symbols):
+            print(f"\nProcessing {symbol_name} ({i+1}/{total_stocks})...")
             
-            output_path = os.path.join(output_dir, f"{index_name}_daily.csv")
+            output_path = os.path.join(output_dir, f"{symbol_name}_daily.csv")
             to_date = datetime.now()
             is_force_download = False
 
@@ -196,6 +199,8 @@ if __name__ == "__main__":
                 
                 print(f"    > Fetching batch: {from_date_str} to {to_date_str}")
 
+                fyers_symbol = f"NSE:{symbol_name}-EQ"
+
                 batch_df = get_historical_data(fyers_symbol, "D", from_date_str, to_date_str)
                 
                 if not batch_df.empty:
@@ -206,7 +211,9 @@ if __name__ == "__main__":
                 batch_start_date = batch_end_dt.date() + timedelta(days=1)
 
             if all_data_batches:
+                # MODIFICATION: Add logic to remove duplicates before saving.
                 new_data_df = pd.concat(all_data_batches)
+                new_data_df = new_data_df[~new_data_df.index.duplicated(keep='last')]
             else:
                 new_data_df = pd.DataFrame()
             
@@ -218,6 +225,6 @@ if __name__ == "__main__":
                     new_data_df.to_csv(output_path, mode='a', header=False)
                     print(f"  > Success: Appended {len(new_data_df)} new records to {output_path}")
             else:
-                print(f"  > Info: No new data returned for {index_name}.")
+                print(f"  > Info: No new data returned for {symbol_name}.")
             
-        print("\n--- Index data update complete! ---")
+        print("\n--- Data update complete! ---")

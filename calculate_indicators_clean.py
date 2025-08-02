@@ -17,6 +17,10 @@
 #
 # MODIFICATION 4 (MONTHLY SIMULATOR FIX):
 # 1. Added calculation for atr_6 to support the monthly simulator's stop-loss logic.
+#
+# MODIFICATION 5 (DATA CLEANUP FIX):
+# 1. Added logic to drop duplicate index entries from all dataframes before saving
+#    to prevent 'InvalidIndexError' in downstream simulators.
 
 import pandas as pd
 import os
@@ -96,6 +100,8 @@ def main():
         # 3. Read and prepare the daily data
         try:
             df_daily = pd.read_csv(input_path, index_col='datetime', parse_dates=True)
+            # --- MODIFICATION: Drop duplicates immediately after reading ---
+            df_daily = df_daily[~df_daily.index.duplicated(keep='last')]
             df_daily.sort_index(inplace=True)
             if df_daily.empty:
                 print(f"  > Warning: Daily data file for {symbol_name} is empty. Skipping.")
@@ -133,7 +139,10 @@ def main():
             if df_htf.empty:
                 print(f"  > Warning: No {tf_name} data after resampling. Skipping.")
                 continue
-                
+            
+            # --- MODIFICATION: Drop duplicates from higher timeframe data as well ---
+            df_htf = df_htf[~df_htf.index.duplicated(keep='last')]
+            
             print(f"  > Calculating indicators for {tf_name} timeframe...")
             df_htf_processed = calculate_all_indicators(df_htf)
             
