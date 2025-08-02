@@ -1,18 +1,18 @@
-# simulator_monthly_advanced.py
+# test_monthly_lookback_sl.py
 #
 # Description:
-# This is a new, state-of-the-art, bias-free backtesting simulator for a
-# Monthly Pullback Strategy, inspired by the HTF (weekly) framework.
+# This script is a net-new simulator designed to test a specific concept:
+# combining the Monthly Pullback Strategy with the "LOOKBACK" stop-loss
+# mechanism from the HTF (weekly) simulator. This allows a researcher to
+# test if an initial stop-loss based on recent price action (5-day low)
+# is a viable alternative to the ATR or PERCENT methods for a monthly-timeframe trade.
 #
-# MODIFICATION (v3.0 - FINAL CALCULATION FIX):
-# 1. FIXED: A critical flaw where the previous fix for position sizing was
-#    incomplete. The logic now correctly uses the equity at the start of the
-#    day ('equity_at_sod') for BOTH position sizing modes ('use_dynamic_position_sizing'
-#    set to True or False), guaranteeing that unrealized profits are never
-#    used as leverage. This ensures robust and realistic results.
+# The script uses the monthly strategy's "Scout and Sniper" architecture and its
+# existing trailing stop logic, but modifies the position sizing to use the
+# LOOKBACK method for the initial stop.
 #
-# MODIFICATION (v2.8 - Custom Risk Model):
-# 1. ADDED: A 'profit_target_mode' to the config for custom risk modeling.
+# Usage:
+#   python test_monthly_lookback_sl.py
 
 import pandas as pd
 import os
@@ -21,7 +21,7 @@ from datetime import datetime, time as dt_time, timedelta
 import sys
 import numpy as np
 
-# --- CONFIGURATION FOR THE MONTHLY ADVANCED SIMULATOR ---
+# --- CONFIGURATION FOR THE NEW MONTHLY LOOKBACK SIMULATOR ---
 config = {
     # --- General Backtest Parameters ---
     'initial_capital': 1000000,
@@ -33,7 +33,7 @@ config = {
     'data_folder_base': 'data/processed',
     'intraday_data_folder': 'historical_data_15min',
     'log_folder': 'backtest_logs',
-    'strategy_name': 'simulator_monthly_advanced',
+    'strategy_name': 'test_monthly_lookback_sl', # New name for a new log folder
 
     # --- Enhanced Logging Options ---
     'log_options': { 'log_trades': True, 'log_missed': True, 'log_summary': True, 'log_filtered': True },
@@ -47,7 +47,7 @@ config = {
     'volume_multiplier_monthly': 1.2,
     
     # --- Stop-Loss Configuration (MODIFIED FOR LOOKBACK) ---
-    'stop_loss_mode': 'PERCENT', # Options: 'ATR', 'PERCENT' or 'LOOKBACK'
+    'stop_loss_mode': 'LOOKBACK', # Options: 'ATR', 'PERCENT' or 'LOOKBACK'
     'fixed_stop_loss_percent': 0.09,
     'atr_period_monthly': 6,
     'atr_multiplier_stop': 1.2,
@@ -60,8 +60,8 @@ config = {
 
     # --- Portfolio & Risk Management ---
     'use_dynamic_position_sizing': True,
-    'risk_per_trade_percent': 4.0,
-    'max_portfolio_risk_percent': 15.0,
+    'risk_per_trade_percent': 2.0,
+    'max_portfolio_risk_percent': 8.0,
     'max_new_positions_per_day': 6,
 
     # --- Conviction Engine (Sniper Filters) ---
@@ -120,16 +120,15 @@ def simulate_trade_outcome(symbol, entry_date, entry_price, stop_loss, daily_dat
     for date in trade_dates:
         if date not in df.index: continue
         candle = df.loc[date]
-        if cfg['use_partial_profit_leg'] and not leg1_sold and candle['high'].item() >= target_price:
+        if cfg['use_partial_profit_leg'] and not leg1_sold and candle['high'] >= target_price:
             partial_exit_pnl = target_price - entry_price; leg1_sold = True; current_stop = entry_price
-        # --- FIX: Use .item() to get a single value from the Series ---
-        if candle['low'].item() <= current_stop:
+        if candle['low'] <= current_stop:
             final_pnl = current_stop - entry_price; exit_date = date; break
-        if candle['close'].item() > entry_price:
+        if candle['close'] > entry_price:
             new_stop = max(current_stop, entry_price)
-            if candle['close'].item() > candle['open'].item(): new_stop = max(new_stop, candle['low'].item())
+            if candle['close'] > candle['open']: new_stop = max(new_stop, candle['low'])
             current_stop = new_stop
-    if exit_date is None: exit_date, final_pnl = df.index[-1], df.iloc[-1]['close'].item() - entry_price
+    if exit_date is None: exit_date, final_pnl = df.index[-1], df.iloc[-1]['close'] - entry_price
     total_pnl = (partial_exit_pnl * 0.5) + (final_pnl * 0.5) if (cfg['use_partial_profit_leg'] and leg1_sold) else final_pnl
     return exit_date, total_pnl
 
@@ -199,33 +198,33 @@ class MonthlyAdvancedSimulator:
                 loc_monthly = loc_monthly_indexer[0]
                 setup_candle = df_monthly.iloc[loc_monthly]
 
-                is_green = setup_candle['close'].item() > setup_candle['open'].item()
+                is_green = setup_candle['close'] > setup_candle['open']
                 
                 above_ema = True
                 if self.cfg.get('use_ema_filter', True):
-                    above_ema = setup_candle['close'].item() > setup_candle.get(f"ema_{self.cfg['ema_period_monthly']}", np.inf).item()
+                    above_ema = setup_candle['close'] > setup_candle.get(f"ema_{self.cfg['ema_period_monthly']}", np.inf)
                 
                 volume_ok = True
                 if self.cfg.get('use_monthly_volume_filter', False):
-                    volume_ok = setup_candle['volume'].item() > (setup_candle[f"volume_{self.cfg['volume_ma_period_monthly']}_sma"].item() * self.cfg['volume_multiplier_monthly'])
+                    volume_ok = setup_candle['volume'] > (setup_candle[f"volume_{self.cfg['volume_ma_period_monthly']}_sma"] * self.cfg['volume_multiplier_monthly'])
                 
                 if not (is_green and above_ema and volume_ok): continue
                 
                 red_candles = get_consecutive_red_candles(df_monthly, loc_monthly, min_candles=1)
                 if not red_candles: continue
 
-                trigger_price = max([c['high'].item() for c in red_candles] + [setup_candle['high'].item()])
+                trigger_price = max([c['high'] for c in red_candles] + [setup_candle['high']])
                 if month_end_date not in df_daily.index: continue
                 
-                vol_sma = df_daily.loc[month_end_date, f"volume_{self.cfg['volume_ma_period_daily']}_sma"].item()
+                vol_sma = df_daily.loc[month_end_date, f"volume_{self.cfg['volume_ma_period_daily']}_sma"]
                 target_daily_volume = vol_sma * self.cfg['volume_multiplier_daily']
-                monthly_atr = setup_candle[f"atr_{self.cfg['atr_period_monthly']}"].item()
+                monthly_atr = setup_candle[f"atr_{self.cfg['atr_period_monthly']}"]
                 if pd.isna(target_daily_volume) or pd.isna(monthly_atr): continue
 
                 setup_id = f"{symbol}_{setup_candle.name.strftime('%Y-%m-%d')}"
                 self.all_setups_log.append({'setup_id': setup_id, 'symbol': symbol, 'setup_date': setup_candle.name, 'trigger_price': trigger_price, 'monthly_atr': monthly_atr, 'status': 'IDENTIFIED'})
 
-                vix_close = self.daily_data[self.cfg['vix_symbol']].loc[month_end_date]['close'].item()
+                vix_close = self.daily_data[self.cfg['vix_symbol']].loc[month_end_date]['close']
                 
                 start_next_month = month_end_date + pd.offsets.MonthBegin(1)
                 end_next_month = month_end_date + pd.offsets.MonthEnd(1)
@@ -252,12 +251,12 @@ class MonthlyAdvancedSimulator:
         try:
             mkt_idx_intra = self.intraday_data[self.cfg['market_strength_index']].loc[date_str]
             if mkt_idx_intra.empty: return
-            mkt_open = mkt_idx_intra.iloc[0]['open'].item()
+            mkt_open = mkt_idx_intra.iloc[0]['open']
             vix_df = self.daily_data[self.cfg['vix_symbol']]
             current_date_pos_indexer = vix_df.index.get_indexer([date], method='ffill')
             if not current_date_pos_indexer.size or current_date_pos_indexer[0] < 1: return
             prev_day_loc = current_date_pos_indexer[0] - 1
-            vix_close = vix_df.iloc[prev_day_loc]['close'].item()
+            vix_close = vix_df.iloc[prev_day_loc]['close']
             if isinstance(vix_close, pd.Series): vix_close = vix_close.item()
         except (KeyError, IndexError): return
 
@@ -272,26 +271,26 @@ class MonthlyAdvancedSimulator:
                 try:
                     stock_intra_df = self.intraday_data[symbol].loc[date_str]
                     stock_candle = stock_intra_df.loc[candle_time]
-                    stock_open = stock_intra_df.iloc[0]['open'].item()
+                    stock_open = stock_intra_df.iloc[0]['open']
                 except (KeyError, IndexError): continue
 
-                if stock_candle['high'].item() >= details['trigger_price']:
+                if stock_candle['high'] >= details['trigger_price']:
                     log_template = {'symbol': symbol, 'timestamp': candle_time, 'trigger_price': details['trigger_price'], 'setup_id': details['setup_id']}
                     
                     if self.cfg['use_volume_projection']:
-                        cum_vol = stock_intra_df.loc[:candle_time, 'volume'].sum().item()
+                        cum_vol = stock_intra_df.loc[:candle_time, 'volume'].sum()
                         vol_ok, actual_vol, req_vol = check_volume_projection(candle_time, cum_vol, details['target_daily_volume'], self.cfg['volume_projection_thresholds'])
                         if not vol_ok:
                             self.filtered_log.append({**log_template, 'filter_type': 'Volume Projection', 'actual': f"{actual_vol:,.0f}", 'expected': f"{req_vol:,.0f}"})
                             continue
                     if self.cfg['use_vix_adaptive_filters']:
-                        mkt_strength = (mkt_candle['close'].item() / mkt_open - 1) * 100
+                        mkt_strength = (mkt_candle['close'] / mkt_open - 1) * 100
                         threshold = self.cfg['market_strength_threshold_high'] if vix_close > self.cfg['vix_high_threshold'] else self.cfg['market_strength_threshold_calm']
                         if mkt_strength < threshold:
                             self.filtered_log.append({**log_template, 'filter_type': 'Market Strength', 'actual': f"{mkt_strength:.2f}%", 'expected': f">{threshold:.2f}%"})
                             continue
                     if self.cfg['use_intraday_rs_filter']:
-                        stock_rs = (stock_candle['close'].item() / stock_open - 1) * 100
+                        stock_rs = (stock_candle['close'] / stock_open - 1) * 100
                         if stock_rs < mkt_strength:
                             self.filtered_log.append({**log_template, 'filter_type': 'Intraday RS', 'actual': f"{stock_rs:.2f}%", 'expected': f">{mkt_strength:.2f}%"})
                             continue
@@ -317,7 +316,7 @@ class MonthlyAdvancedSimulator:
             loc_d = loc_d_indexer[0]
             stop_loss_slice = self.daily_data[symbol].iloc[max(0, loc_d - self.cfg['stop_loss_lookback_days']):loc_d]
             if stop_loss_slice.empty: return
-            stop_loss_actual = stop_loss_slice['low'].min().item()
+            stop_loss_actual = stop_loss_slice['low'].min()
         else:
             return 
         
@@ -367,9 +366,9 @@ class MonthlyAdvancedSimulator:
             try:
                 candle = self.intraday_data[pos['symbol']].loc[candle_time]
                 
-                pos['lowest_price_since_entry'] = min(pos.get('lowest_price_since_entry', pos['entry_price']), candle['low'].item())
+                pos['lowest_price_since_entry'] = min(pos.get('lowest_price_since_entry', pos['entry_price']), candle['low'])
 
-                if self.cfg['use_partial_profit_leg'] and not pos.get('partial_exit', False) and candle['high'].item() >= pos['target']:
+                if self.cfg['use_partial_profit_leg'] and not pos.get('partial_exit', False) and candle['high'] >= pos['target']:
                     shares_to_sell = pos['shares'] // 2
                     exit_price = pos['target']
                     exit_proceeds += shares_to_sell * exit_price
@@ -381,7 +380,7 @@ class MonthlyAdvancedSimulator:
                     
                     pos.update({'shares': pos['shares'] - shares_to_sell, 'partial_exit': True, 'stop_loss': pos['entry_price']})
 
-                if pos['shares'] > 0 and candle['low'].item() <= pos['stop_loss']:
+                if pos['shares'] > 0 and candle['low'] <= pos['stop_loss']:
                     exit_price = pos['stop_loss']
                     exit_proceeds += pos['shares'] * exit_price
                     
@@ -400,13 +399,13 @@ class MonthlyAdvancedSimulator:
             if date in self.daily_data.get(pos['symbol'], pd.DataFrame()).index:
                 daily_candle = self.daily_data[pos['symbol']].loc[date]
                 new_stop = pos['stop_loss']
-                if daily_candle['close'].item() > pos['entry_price']:
+                if daily_candle['close'] > pos['entry_price']:
                     if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
                         new_stop = max(new_stop, pos['entry_price'] + self.cfg['breakeven_buffer_points'])
-                    if daily_candle['close'].item() > daily_candle['open'].item():
-                        new_stop = max(new_stop, daily_candle['low'].item())
+                    if daily_candle['close'] > daily_candle['open']:
+                        new_stop = max(new_stop, daily_candle['low'])
                 pos['stop_loss'] = new_stop
-        eod_equity = self.portfolio['cash'] + sum([p['shares'] * self.daily_data[p['symbol']].loc[date]['close'].item() for p in self.portfolio['positions'].values() if date in self.daily_data.get(p['symbol'], pd.DataFrame()).index])
+        eod_equity = self.portfolio['cash'] + sum([p['shares'] * self.daily_data[p['symbol']].loc[date]['close'] for p in self.portfolio['positions'].values() if date in self.daily_data.get(p['symbol'], pd.DataFrame()).index])
         self.portfolio['equity'] = eod_equity
         self.portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
 
