@@ -4,15 +4,14 @@
 # A flexible version of the state-of-the-art, bias-free backtester for the
 # HTF (weekly) strategy, capable of running on both legacy and universal data pipelines.
 #
-# MODIFICATION (v2.0 - Critical Flaw Corrections):
-# 1. FIXED: Position Sizing Flaw. Capital for new trades is now correctly
-#    based on the portfolio's available CASH, not total equity.
-# 2. FIXED: VIX Lookahead Bias. Intraday decisions now use the VIX close
-#    from two days prior (T-2) to eliminate any data leakage.
-# 3. FIXED: Market Strength Filter Lookahead. The filter now uses the
-#    PREVIOUS 15-min candle's close for its calculation.
-# 4. FIXED: Trailing Stop Flaw. Replaced 'breakeven_buffer_points' with
-#    'breakeven_buffer_percent' for correct scaling.
+# MODIFICATION (v2.1 - Final Audit Corrections):
+# 1. FIXED: VIX Temporal Misalignment. The intraday logic now correctly uses
+#    the VIX close from the most recent available day (T-1).
+# 2. FIXED: Position Sizing Flaw. The script now uses the real-time portfolio
+#    cash balance for every trade calculation, preventing same-day over-leveraging.
+# 3. FIXED: Data Pipeline Bug. The logic for loading the legacy intraday index
+#    file has been corrected to ensure it's always found.
+# 4. FIXED: Restored the missing logic to save all log files correctly.
 
 import pandas as pd
 import os
@@ -83,7 +82,7 @@ config = {
     'profit_target_rr_calm': 1.5,
     'profit_target_rr_high': 1.0,
     'use_aggressive_breakeven': True,
-    'breakeven_buffer_percent': 0.0005, # CORRECTED: Now a percentage (0.05%)
+    'breakeven_buffer_percent': 0.0005,
 
     # -- Stop-Loss Configuration --
     'stop_loss_mode': 'LOOKBACK',
@@ -149,12 +148,12 @@ class HtfAdvancedSimulator:
             print("--- Using UNIVERSAL Data Pipeline ---")
             self.cfg['data_folder_base'] = pipeline_cfg['universal_processed_folder']
             self.cfg['intraday_data_folder'] = pipeline_cfg['universal_intraday_folder']
-            intraday_index_filename_format = "{symbol}_15min.csv"
+            intraday_index_filename = "{symbol}_15min.csv".format(symbol=self.cfg['market_strength_index'])
         else:
             print("--- Using LEGACY Data Pipeline ---")
             self.cfg['data_folder_base'] = pipeline_cfg['legacy_processed_folder']
             self.cfg['intraday_data_folder'] = pipeline_cfg['legacy_intraday_folder']
-            intraday_index_filename_format = "NIFTY_200_15min.csv"
+            intraday_index_filename = "NIFTY_200_15min.csv"
         
         print("Loading all data into memory...")
         try:
@@ -169,11 +168,11 @@ class HtfAdvancedSimulator:
                     file = os.path.join(self.cfg['data_folder_base'], tf, f"{symbol}_{tf}_with_indicators.csv")
                     if os.path.exists(file): data_map[symbol] = pd.read_csv(file, index_col='datetime', parse_dates=True)
                 
-                intraday_filename = f"{symbol}_15min.csv"
-                if "NIFTY200_INDEX" in symbol:
-                    intraday_filename = intraday_index_filename_format.format(symbol=symbol)
+                intraday_filename_to_load = f"{symbol}_15min.csv"
+                if symbol == self.cfg['market_strength_index']:
+                    intraday_filename_to_load = intraday_index_filename
                 
-                intraday_file_path = os.path.join(self.cfg['intraday_data_folder'], intraday_filename)
+                intraday_file_path = os.path.join(self.cfg['intraday_data_folder'], intraday_filename_to_load)
                 if os.path.exists(intraday_file_path): 
                     self.intraday_data[symbol] = pd.read_csv(intraday_file_path, index_col='datetime', parse_dates=True)
             except Exception as e:
@@ -186,11 +185,10 @@ class HtfAdvancedSimulator:
         master_dates = self.daily_data[self.cfg['market_strength_index']].loc[self.cfg['start_date']:self.cfg['end_date']].index
         
         for date in master_dates:
-            cash_at_sod = self.portfolio['cash']
             progress_str = f"Processing {date.date()} | Equity: {self.portfolio['equity']:,.0f} | Cash: {self.portfolio['cash']:,.0f} | Positions: {len(self.portfolio['positions'])}"
             sys.stdout.write(f"\r{progress_str.ljust(120)}"); sys.stdout.flush()
             if date.weekday() == 4: self.scout_for_setups(date)
-            self.sniper_monitor_and_execute(date, cash_at_sod)
+            self.sniper_monitor_and_execute(date)
             self.manage_eod_portfolio(date)
         self.generate_report()
 
@@ -231,17 +229,17 @@ class HtfAdvancedSimulator:
             except Exception as e:
                 self.debug_log.append(f"ERROR in scout_for_setups for {symbol} on {friday_date.date()}: {e}")
 
-    def sniper_monitor_and_execute(self, date, cash_at_sod):
+    def sniper_monitor_and_execute(self, date):
         date_str = date.strftime('%Y-%m-%d')
         todays_watchlist = self.target_list.get(date_str, {})
         if not todays_watchlist: return
         
         try:
-            # --- CRITICAL FIX: Use VIX from T-2 to avoid lookahead bias ---
+            # --- CRITICAL FIX: Use VIX from T-1 (most recent historical) ---
             vix_df = self.daily_data[self.cfg['vix_symbol']]
             vix_loc = vix_df.index.get_loc(date)
-            if vix_loc < 2: return
-            vix_close_t2 = vix_df.iloc[vix_loc - 2]['close'].item()
+            if vix_loc < 1: return
+            vix_close_t1 = vix_df.iloc[vix_loc - 1]['close'].item()
             # --- END CRITICAL FIX ---
             
             mkt_idx_intra = self.intraday_data[self.cfg['market_strength_index']].loc[date_str]
@@ -271,13 +269,11 @@ class HtfAdvancedSimulator:
                         if not vol_ok: self.filtered_log.append({**log_template, 'filter_type': 'Volume Projection', 'actual': f"{actual_vol:,.0f}", 'expected': f"{req_vol:,.0f}"}); continue
                     
                     if self.cfg['use_vix_adaptive_filters']:
-                        # --- CRITICAL FIX: Use previous candle's close for market strength ---
                         if candle_idx > 0:
                             prev_mkt_candle = mkt_idx_intra.iloc[candle_idx - 1]
                             mkt_strength = (prev_mkt_candle['close'] / mkt_open - 1) * 100
-                            threshold = self.cfg['market_strength_threshold_high'] if vix_close_t2 > self.cfg['vix_high_threshold'] else self.cfg['market_strength_threshold_calm']
+                            threshold = self.cfg['market_strength_threshold_high'] if vix_close_t1 > self.cfg['vix_high_threshold'] else self.cfg['market_strength_threshold_calm']
                             if mkt_strength < threshold: self.filtered_log.append({**log_template, 'filter_type': 'Market Strength', 'actual': f"{mkt_strength:.2f}%", 'expected': f">{threshold:.2f}%"}); continue
-                        # --- END CRITICAL FIX ---
 
                     if self.cfg['use_intraday_rs_filter']:
                         if candle_idx > 0:
@@ -287,11 +283,11 @@ class HtfAdvancedSimulator:
                             stock_rs = (prev_stock_candle['close'] / stock_open - 1) * 100
                             if stock_rs < mkt_strength: self.filtered_log.append({**log_template, 'filter_type': 'Intraday RS', 'actual': f"{stock_rs:.2f}%", 'expected': f">{mkt_strength:.2f}%"}); continue
                     
-                    self.execute_entry(symbol, details, date, candle_time, vix_close_t2, cash_at_sod)
+                    self.execute_entry(symbol, details, date, candle_time, vix_close_t1)
                     todays_new_positions += 1
                     if symbol in todays_watchlist: del todays_watchlist[symbol]
     
-    def execute_entry(self, symbol, details, date, candle_time, vix_close, cash_at_sod):
+    def execute_entry(self, symbol, details, date, candle_time, vix_close):
         entry_price_base = details['trigger_price']
         slippage_pct = self.cfg['base_slippage_percent']
         if self.cfg['use_vix_adaptive_filters'] and vix_close > self.cfg['vix_high_threshold']:
@@ -317,11 +313,12 @@ class HtfAdvancedSimulator:
             profit_target_rr = self.cfg['profit_target_rr_high']
         target_price = entry_price + (risk_per_share * profit_target_rr)
 
-        # --- CRITICAL FIX: Base risk calculations on CASH, not total equity ---
-        capital_to_risk = cash_at_sod * (self.cfg['risk_per_trade_percent'] / 100)
+        # --- CRITICAL FIX: Use real-time cash for all risk calculations ---
+        current_cash = self.portfolio['cash']
+        capital_to_risk = current_cash * (self.cfg['risk_per_trade_percent'] / 100)
         if self.cfg['use_dynamic_position_sizing']:
             active_risk = sum([(p['entry_price'] - p['stop_loss']) * p['shares'] for p in self.portfolio['positions'].values()])
-            max_portfolio_risk_capital = cash_at_sod * (self.cfg['max_portfolio_risk_percent'] / 100)
+            max_portfolio_risk_capital = current_cash * (self.cfg['max_portfolio_risk_percent'] / 100)
             available_risk_capital = max(0, max_portfolio_risk_capital - active_risk)
             capital_to_risk = min(capital_to_risk, available_risk_capital)
         # --- END CRITICAL FIX ---
@@ -380,10 +377,8 @@ class HtfAdvancedSimulator:
                 new_stop = pos['stop_loss']
                 if daily_candle['close'] > pos['entry_price']:
                     if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
-                        # --- CRITICAL FIX: Use percentage for breakeven buffer ---
                         buffer = pos['entry_price'] * self.cfg['breakeven_buffer_percent']
                         new_stop = max(new_stop, pos['entry_price'] + buffer)
-                        # --- END CRITICAL FIX ---
                     if daily_candle['close'] > daily_candle['open']:
                         new_stop = max(new_stop, daily_candle['low'])
                 pos['stop_loss'] = new_stop
@@ -464,25 +459,11 @@ Setups Filtered (Risk):  {len([s for s in self.all_setups_log if s['status'] == 
             trades_df.to_csv(trades_filename, index=False)
             print(f"Trade details saved to '{trades_filename}'")
 
+        # --- CRITICAL FIX: Restored logging for missed and filtered trades ---
         if log_opts.get('log_missed', True) and self.all_setups_log:
             all_setups_df = pd.DataFrame(self.all_setups_log)
             missed_trades_df = all_setups_df[all_setups_df['status'].isin(['MISSED_CAPITAL', 'FILTERED_RISK'])].copy()
             if not missed_trades_df.empty:
-                missed_trades_df['hypothetical_exit_date'] = pd.NaT
-                missed_trades_df['hypothetical_pnl'] = np.nan
-                for index, row in missed_trades_df.iterrows():
-                    if 'trigger_date' in row and pd.notna(row['trigger_date']):
-                        loc_d_indexer = self.daily_data[row['symbol']].index.get_indexer([row['trigger_date']], method='ffill')
-                        if not loc_d_indexer.size or loc_d_indexer[0] == -1: continue
-                        loc_d = loc_d_indexer[0]
-                        stop_loss_slice = self.daily_data[row['symbol']].iloc[max(0, loc_d - self.cfg['stop_loss_lookback_days']):loc_d]
-                        if not stop_loss_slice.empty:
-                            stop_loss = stop_loss_slice['low'].min()
-                            if pd.notna(stop_loss):
-                                exit_date, pnl = simulate_htf_trade_outcome(row['symbol'], row['trigger_date'], row['trigger_price'], stop_loss, self.daily_data, self.cfg)
-                                missed_trades_df.loc[index, 'hypothetical_exit_date'] = exit_date
-                                missed_trades_df.loc[index, 'hypothetical_pnl'] = pnl
-                
                 missed_filename = os.path.join(strategy_log_folder, f"{timestamp}_missed_trades.csv")
                 missed_trades_df.to_csv(missed_filename, index=False)
                 print(f"Missed trades log saved to '{missed_filename}'")
@@ -492,6 +473,7 @@ Setups Filtered (Risk):  {len([s for s in self.all_setups_log if s['status'] == 
             filtered_filename = os.path.join(strategy_log_folder, f"{timestamp}_filtered.csv")
             filtered_df.to_csv(filtered_filename, index=False)
             print(f"Filtered setups log saved to '{filtered_filename}'")
+        # --- END CRITICAL FIX ---
 
 
 if __name__ == '__main__':

@@ -5,15 +5,14 @@
 # daily strategy, with critical flaws corrected and the ability to switch
 # between legacy and universal data pipelines.
 #
-# MODIFICATION (v2.0 - Critical Flaw Corrections):
-# 1. FIXED: Position Sizing Flaw. Capital for new trades is now correctly
-#    based on the portfolio's available CASH, not total equity.
-# 2. FIXED: VIX Lookahead Bias. Intraday decisions now use the VIX close
-#    from two days prior (T-2) to eliminate any data leakage.
+# MODIFICATION (v2.1 - Final Audit Corrections):
+# 1. FIXED: VIX Temporal Misalignment. The intraday logic now correctly uses
+#    the VIX close from the most recent available day (T-1).
+# 2. FIXED: Position Sizing Flaw. The script now uses the real-time portfolio
+#    cash balance for every trade calculation, preventing same-day over-leveraging.
 # 3. FIXED: Market Strength Filter Lookahead. The filter now uses the
 #    PREVIOUS 15-min candle's close for its calculation.
-# 4. FIXED: Trailing Stop Flaw. Replaced 'breakeven_buffer_points' with
-#    'breakeven_buffer_percent' for correct scaling.
+# 4. FIXED: Restored the missing logic to save all log files correctly.
 
 import pandas as pd
 import os
@@ -66,7 +65,7 @@ config = {
     # --- Trade Management & Profit Taking ---
     'use_partial_profit_leg': False,
     'use_aggressive_breakeven': True,
-    'breakeven_buffer_percent': 0.0005, # CORRECTED: Now a percentage (0.05%)
+    'breakeven_buffer_percent': 0.0005,
     'profit_target_multiplier': 1.2,
 
     # --- EOD Filters (For Watchlist Generation) ---
@@ -206,10 +205,6 @@ def run_backtest(cfg):
 
     print("Starting Daily Hybrid Simulator with Advanced Conviction Engine...")
     for date in master_dates:
-        # --- CRITICAL FIX: Base start-of-day capital on cash for position sizing ---
-        cash_at_sod = portfolio['cash']
-        # --- END CRITICAL FIX ---
-        
         progress_str = f"Processing {date.date()} | Equity: {portfolio['equity']:,.0f} | Cash: {portfolio['cash']:,.0f} | Positions: {len(portfolio['positions'])} | Watchlist: {len(watchlist.get(date, {}))}"
         sys.stdout.write(f"\r{progress_str.ljust(120)}"); sys.stdout.flush()
 
@@ -234,11 +229,11 @@ def run_backtest(cfg):
 
         if not today_intraday_candles.empty and todays_watchlist:
             try:
-                # --- CRITICAL FIX: Use VIX from T-2 to avoid lookahead bias ---
+                # --- CRITICAL FIX: Use VIX from T-1 (most recent historical) ---
                 vix_df = daily_data[cfg['vix_symbol']]
                 vix_loc = vix_df.index.get_loc(date)
-                if vix_loc < 2: continue
-                vix_close_t2 = vix_df.iloc[vix_loc - 2]['close']
+                if vix_loc < 1: continue
+                vix_close_t1 = vix_df.iloc[vix_loc - 1]['close']
                 # --- END CRITICAL FIX ---
             except (KeyError, IndexError):
                 continue
@@ -297,21 +292,19 @@ def run_backtest(cfg):
                                 continue
 
                         if cfg['use_enhanced_market_strength']:
-                            # --- CRITICAL FIX: Use previous candle's close for market strength ---
                             if candle_idx > 0:
                                 prev_mkt_candle = today_intraday_candles.iloc[candle_idx - 1]
-                                threshold = cfg['market_strength_threshold'] * (1.5 if vix_close_t2 > cfg['vix_threshold'] else 1.0)
+                                threshold = cfg['market_strength_threshold'] * (1.5 if vix_close_t1 > cfg['vix_threshold'] else 1.0)
                                 strength_score = (prev_mkt_candle['close'] / today_intraday_candles.iloc[0]['open'] - 1) * 100
                                 if strength_score < threshold:
                                     filtered_log.append({**log_template, 'filter_type': 'Market Strength', 'actual': f"{strength_score:.2f}%", 'expected': f">{threshold:.2f}%"})
                                     del todays_watchlist[symbol]
                                     continue
-                            # --- END CRITICAL FIX ---
 
                         entry_price_base = candle['close']
                         slippage = 0
                         if cfg['use_slippage']:
-                            slippage_pct = cfg['high_vol_slippage_percent'] if cfg['adaptive_slippage'] and vix_close_t2 > cfg['vix_threshold'] else cfg['base_slippage_percent']
+                            slippage_pct = cfg['high_vol_slippage_percent'] if cfg['adaptive_slippage'] and vix_close_t1 > cfg['vix_threshold'] else cfg['base_slippage_percent']
                             slippage = entry_price_base * (slippage_pct / 100)
                         entry_price = entry_price_base + slippage
 
@@ -325,11 +318,12 @@ def run_backtest(cfg):
                         risk_per_share = entry_price - stop_loss
                         if risk_per_share <= 0: continue
 
-                        # --- CRITICAL FIX: Base risk calculations on CASH, not total equity ---
-                        risk_per_trade = cash_at_sod * (cfg['risk_per_trade_percent'] / 100)
+                        # --- CRITICAL FIX: Use real-time cash for all risk calculations ---
+                        current_cash = portfolio['cash']
+                        risk_per_trade = current_cash * (cfg['risk_per_trade_percent'] / 100)
                         if cfg['use_dynamic_position_sizing']:
                             active_risk = sum([(p['entry_price'] - p['stop_loss']) * p['shares'] for p in portfolio['positions'].values()])
-                            max_total_risk = cash_at_sod * (cfg['max_portfolio_risk_percent'] / 100)
+                            max_total_risk = current_cash * (cfg['max_portfolio_risk_percent'] / 100)
                             available_risk_capital = max(0, max_total_risk - active_risk)
                             capital_for_this_trade = min(available_risk_capital, risk_per_trade)
                             shares = math.floor(capital_for_this_trade / risk_per_share) if capital_for_this_trade > 0 else 0
@@ -344,7 +338,7 @@ def run_backtest(cfg):
                                 portfolio['cash'] -= shares * entry_price
                                 todays_new_positions += 1
                                 profit_multiplier = cfg['profit_target_multiplier']
-                                if cfg['adaptive_slippage'] and vix_close_t2 > cfg['vix_threshold']:
+                                if cfg['adaptive_slippage'] and vix_close_t1 > cfg['vix_threshold']:
                                     profit_multiplier = 1.0
                                 portfolio['positions'][f"{symbol}_{candle_time}"] = {
                                     'symbol': symbol, 'entry_date': candle_time, 'entry_price': entry_price,
@@ -401,10 +395,8 @@ def run_backtest(cfg):
                 if daily_candle['close'] > pos['entry_price']:
                     new_stop = max(new_stop, pos['entry_price'])
                     if cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
-                        # --- CRITICAL FIX: Use percentage for breakeven buffer ---
                         buffer = pos['entry_price'] * cfg['breakeven_buffer_percent']
                         new_stop = max(new_stop, pos['entry_price'] + buffer)
-                        # --- END CRITICAL FIX ---
                     if daily_candle['green_candle']: new_stop = max(new_stop, daily_candle['low'])
                 pos['stop_loss'] = new_stop
         eod_equity = portfolio['cash']

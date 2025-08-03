@@ -1,9 +1,9 @@
-Master Project Context: Nifty 200 Pullback Strategy (Version 4.4)
+Master Project Context: Traffic Light 2025 (Version 5.1)
 To the Large Language Model:
 
 This is a private, custom algorithmic trading strategy. The information contained in the attached documents and code files is the single source of truth. Do not reference any external code, public GitHub repositories, or general trading knowledge. Your sole objective is to build a complete and accurate mental model of this project based only on the provided materials.
 
-Public GitHub Repo for context: https://github.com/fluidjeel/traffic-light-2025. All files are available at the root of the repo.
+Public GitHub Repo for context: https://github.com/fluidjeel/traffic-light-2025
 
 Your tasks are as follows:
 
@@ -13,9 +13,9 @@ Prove Foundational Understanding: Your first response must be a direct paraphras
 
 Prove Deeper Understanding: After your initial summary, you must answer the following questions to prove you have understood the relationship between the system's components:
 
-Question 1: In htf_simulator_advanced.py (the weekly simulator), if a researcher disables the use_vix_adaptive_filters by setting it to False, which specific component's behavior changes: the Scout's, the Sniper's, or both? Explain your reasoning by referencing the logic described in the documentation.
+Question 1: In monthly_tfl_simulator.py, if a researcher sets 'use_universal_pipeline': False in the data_pipeline_config, which specific folder paths will the script use for its data_folder_base and intraday_data_folder, and what will be the exact filename it looks for to load the intraday Nifty 200 Index data?
 
-Question 2: In simulator_monthly_advanced.py, explain the precise mathematical relationship between the atr_multiplier_stop and the risk_per_trade_percent when calculating position size. If a researcher makes the stop-loss wider by increasing atr_multiplier_stop from 1.2 to 1.8, what is the direct, calculated impact on the number of shares purchased for a given trade, assuming all other factors remain constant?
+Question 2: Explain the critical difference between using a cash_at_sod variable (defined once per day) versus the real-time self.portfolio['cash'] variable for calculating capital_to_risk inside the execute_entry function. Why was this change essential for the integrity of the backtest?
 
 Context Setting Starts
 Objective:
@@ -30,74 +30,52 @@ project_code_explained.md: After understanding the master plan, read this file t
 
 project_runbook_operational_guide.md: This document will explain the standard operating procedure for running the entire research pipeline, from data acquisition to analysis.
 
-Core Simulator & Analysis Scripts: Finally, review the source code of the key scripts to understand the implementation details.
+Core Universal Pipeline & Analysis Scripts: Finally, review the source code of the key scripts to understand the implementation details.
 
-simulator_daily_hybrid.py (The daily timeframe simulator)
+universal_fyers_scraper.py (The universal data scraper)
 
-htf_simulator_advanced.py (The weekly timeframe simulator)
+universal_calculate_indicators.py (The universal indicator calculator)
 
-simulator_monthly_advanced.py (The new monthly timeframe simulator)
+daily_tfl_simulator.py (The daily timeframe simulator)
 
-mae_analyzer.py (The new stop-loss analysis tool)
+weekly_tfl_simulator.py (The weekly timeframe simulator)
+
+monthly_tfl_simulator.py (The monthly timeframe simulator)
+
+mae_analyzer_percent.py (The stop-loss analysis tool)
 
 Section 2: High-Level Project Goal & Philosophy
 2.1. Goal
-The primary objective is to develop, backtest, and automate a profitable, long-only, pullback-based swing trading strategy with a verifiable and realistic edge, applied to the Nifty 200 stock universe across multiple timeframes.
+The primary objective is to develop, backtest, and automate a profitable, long-only, swing trading strategy with a verifiable and realistic edge, applied to the Nifty 200 stock universe across multiple timeframes.
 
 2.2. Core Philosophy
-Our guiding principle is an unwavering commitment to eliminating all forms of bias. All development and testing must rigorously distinguish between "Golden Benchmarks" (biased, theoretical models) and "Realistic Simulators" (bias-free, actionable models).
+Our guiding principle is an unwavering commitment to eliminating all forms of bias. All development and testing must be conducted using the final, corrected simulators that have been rigorously audited to remove lookahead biases and critical calculation flaws.
 
-Section 3: System Architecture & Data Pipeline
-The project is a modular pipeline designed for rigorous, bias-free research.
+Section 3: System Architecture & The Universal Data Pipeline
+The project is a streamlined, modular pipeline designed for rigorous, bias-free research.
 
-Data Acquisition: Raw historical data is fetched using a suite of fyers_scrapers.
+Data Acquisition: The universal_fyers_scraper.py script is the single entry point for all data. It intelligently downloads and updates raw daily and 15-minute historical data for all stocks and indices.
 
-Data Processing: The calculate_indicators_clean.py script creates enriched data files for all required timeframes (daily, weekly, monthly).
+Data Processing: The universal_calculate_indicators.py script acts as the central data processing engine. It reads the raw daily data, resamples it into higher timeframes, calculates all necessary indicators, and saves these clean, enriched data files.
 
-Realistic Simulation: The simulator_* scripts run the strategies in a bias-free manner to replicate real-world trading.
+Realistic Simulation: The *_tfl_simulator.py scripts run the strategies in a bias-free manner. They have been fully corrected to eliminate all known lookahead biases and calculation flaws.
 
-Standardized Logging: All simulators save their output logs to dedicated subdirectories within backtest_logs, controlled by the strategy_name key in their configuration. The logs include detailed trade data, including Maximum Adverse Excursion (MAE) for advanced analysis.
-
-Post-Hoc Analysis: The mae_analyzer.py script ingests trade logs to perform "what-if" simulations for stop-loss optimization.
+Post-Hoc Analysis: The mae_analyzer_percent.py script ingests the detailed trade logs to perform "what-if" simulations for data-driven stop-loss optimization.
 
 Section 4: The Definitive and Exclusive Trading Strategy Logic
-4.1. The Monthly Strategy
-This strategy identifies a setup on a monthly chart and confirms the entry on a daily/intraday chart.
+The core of the "Traffic Light 2025" strategy is a pullback continuation pattern. The general logic is to identify a stock in an established uptrend that has experienced a brief pause or "pullback" (represented by one or more red candles) and then resumed its upward momentum (represented by a green candle).
 
-Setup Identification (Monthly):
+Universal Trade Management Rules (Corrected & Bias-Free):
 
-The most recently completed monthly candle must be a green_candle.
+Position Sizing: All simulators correctly calculate position size based on the real-time available cash balance, preventing the leveraging of unrealized profits.
 
-It must be preceded by at least one red_candle on the monthly chart.
+VIX Data Timing: All intraday decisions correctly use the VIX closing value from the previous trading day (T-1), ensuring no lookahead bias.
 
-(Optional Filter) It should close above its 10-month EMA.
+Stop-Loss: Can be configured to use a fixed percentage or a lookback to the lowest low of recent candles.
 
-Daily Breakout Confirmation:
+Trailing Stop: All simulators use a percentage-based buffer for the aggressive breakeven logic to ensure it scales correctly with stock price.
 
-After identifying a valid monthly pattern, it waits for a daily candle's high within the subsequent month to cross above the high of the monthly pattern.
+Section 5: Current Project Status & Immediate Next Steps
+Current Status: The project has successfully migrated to a unified, streamlined data pipeline. The suite of simulators has been rigorously audited and corrected, eliminating all known lookahead biases and critical calculation flaws. The project is now in a robust state, ready for methodical strategy research and optimization.
 
-Trade Management:
-
-Initial Stop-Loss: A volatility-adjusted stop is used, calculated as entry_price - (6_month_ATR * atr_multiplier).
-
-Profit Target: A dynamic R:R target is used (e.g., 2.0R in calm markets, 1.5R in volatile markets).
-
-Trailing Stop: The stop is trailed under the low of subsequent green daily candles.
-
-Section 5: The simulator_monthly_advanced.py
-This script is the new flagship simulator for the monthly strategy. It uses the "Scout and Sniper" architecture.
-
-Scout (EOD, Last Day of Month): The Scout runs only at month-end to identify valid monthly setups. It pre-calculates the trigger_price and the monthly_atr and adds the stock to a Target List for the entire next month.
-
-Sniper (Intraday, Full Month): The Sniper monitors the Target List. It operates within an Adaptive Execution Window, skipping the first few days of the month and then monitoring for a set period. When a stock's price crosses its trigger, it executes the trade.
-
-Section 6: Current Project Status & Immediate Next Steps
-Current Status: The project has successfully developed a suite of robust, bias-free simulators for daily, weekly, and monthly timeframes, complete with a standardized and detailed logging system capable of advanced MAE analysis. The immediate focus remains on addressing foundational backtesting flaws.
-
-Immediate Next Steps:
-
-Implement a Transaction Cost Model: Integrate a realistic cost model into all simulators.
-
-Mitigate Survivorship Bias: Implement a solution for using point-in-time historical index constituents.
-
-Context Setting Ends
+Immediate Next Steps: The focus now shifts from fixing flaws to stress-testing and refining the strategies by methodically enabling the various conviction and regime filters within the simulator configurations.

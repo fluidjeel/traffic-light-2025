@@ -1,96 +1,55 @@
-Project Code Explained (Version 4.5)
-This document provides a detailed functional overview of each key Python script in the Nifty 200 Pullback Strategy project, including its importance, what it accomplishes, and its critical logic as of the latest version.
+Project Code Explained (Version 5.0)
+This document provides a detailed functional overview of each key Python script in the modern Traffic Light 2025 project, reflecting the new universal data pipeline and the final, corrected simulators.
 
-1. Data Pipeline Scripts
-fyers_scrapers (A suite of scripts)
-Importance: These are the foundational scripts of the entire project. Without them, no research or backtesting is possible.
+1. Universal Data Pipeline Scripts
+universal_fyers_scraper.py
 
-Accomplishment: They connect to the data vendor's API to download and save four distinct types of raw historical data: Daily Equity Data, 15-Minute Equity Data, Daily Index Data (NIFTY200, INDIAVIX), and 15-Minute Index Data.
+Importance: This is the single, foundational data acquisition script for the entire project.
 
-Critical Logic: The core logic involves iterating through a list of symbols, formatting date ranges, and making paginated API calls with robust error handling to manage API rate limits and ensure complete data acquisition over long historical periods.
+Accomplishment: It connects to the Fyers API to download and save all required raw historical data (Daily and 15-Minute for both equities and indices). It features intelligent, incremental updates to only fetch new data, a --force flag for full re-downloads, and robust error handling. It saves all data to a unified data/universal_historical_data/ directory.
 
-calculate_indicators_clean.py
-Importance: This script is the central data processing engine. It ensures that all backtesting scripts work with a clean, consistent, and pre-calculated dataset, preventing redundant calculations and potential data inconsistencies.
+Critical Logic: The core logic involves iterating through a symbol list, making paginated API calls, and checking for existing data to determine the correct date range for fetching updates.
 
-Accomplishment: It reads all the raw daily data for both stocks and indices, resamples it into higher timeframes (weekly, monthly), calculates all necessary technical indicators (EMAs, SMAs, Relative Strength, ATR) for every single timeframe, and saves the enriched dataframes to disk.
+universal_calculate_indicators.py
 
-Critical Logic: The most critical block is the resample() and agg() logic. It correctly aggregates daily data into weekly candles (using the 'W-FRI' rule to end weeks on Friday) and monthly candles by taking the first open, maximum high, minimum low, last close, and the sum of volume for the period.
+Importance: This is the central data processing engine for the new pipeline.
 
-2. Benchmark Generators (With Lookahead Bias)
-benchmark_generator_daily.py & benchmark_generator_htf.py
-Importance: These scripts generate the "Golden Benchmarks" for the daily and HTF strategies, respectively. They represent the maximum theoretical performance of the strategies by intentionally using information that would not be available in real time (i.e., with perfect foresight). They serve as an essential upper bound for validating the performance of the realistic simulators.
+Accomplishment: It reads the raw daily data from the universal scraper's output folder, resamples it into all higher timeframes (weekly, monthly), calculates all necessary technical indicators (EMAs, SMAs, ATRs, etc.), and saves the enriched dataframes to a unified data/universal_processed/ directory.
 
-Accomplishment: They run the strategies using only End-of-Day (EOD) data. As part of the standardized logging update, they now save their reports to dedicated subdirectories (benchmark_daily/ and benchmark_htf/) for better organization.
+Critical Logic: The most critical block is the resample() and agg() logic that correctly aggregates daily data into higher timeframe candles before applying the indicator calculations.
 
-Critical Logic (Lookahead Bias): After identifying a setup, these scripts use the completed EOD data from the trigger day to check the Volume and Relative Strength filters. This is a lookahead bias because, in a live intraday scenario, the final EOD volume and closing price are unknown at the moment of entry.
+2. Realistic & Flexible Simulators (Bias-Free)
+The project now uses a suite of three flexible, fully-corrected simulators. Each is capable of running on either the new universal data pipeline or the legacy data folders by changing a single toggle in its configuration.
 
-3. Realistic Simulators (Bias-Free)
-simulator_daily_hybrid.py
-Importance: The advanced, realistic backtesting engine for the Daily Pullback Strategy.
+daily_tfl_simulator.py
 
-Accomplishment: It simulates the daily strategy's complete lifecycle. It performs a scan after the market closes to find high-quality setups and then monitors those specific setups intraday on the following day for execution, using a sophisticated set of real-time filters. It now saves all its output logs to a dedicated strategy folder (simulator_daily_hybrid/) and implements the full enhanced logging suite.
+Importance: The bias-free backtesting engine for the Daily Pullback Strategy.
 
-Critical Logic & Workflow:
+Accomplishment: It simulates the daily strategy's complete lifecycle. It performs an EOD scan to find high-quality setups and then monitors those setups intraday on the following day for execution, using a sophisticated set of real-time conviction filters.
 
-EOD Scan (Day T-1): After the market closes, the script scans all stocks for the daily pullback pattern and applies EOD quality filters (Market Regime, Volume, RS) to create a high-probability Watchlist for the next day.
+Critical Logic: The script is built on a two-day cycle: EOD scan on Day T-1 to generate a watchlist, followed by intraday monitoring and execution on Day T. All calculations (position sizing, VIX timing, etc.) have been corrected to be free of lookahead bias and logical flaws.
 
-Intraday Monitoring (Day T): On the next trading day, it monitors the 15-minute data stream for only the stocks on the Watchlist.
+weekly_tfl_simulator.py
 
-Advanced Conviction & Risk Engine: Before executing a trade, it validates the breakout against a series of bias-free checks, including Time-Anchored Volume Projection and VIX-Adaptive Market Strength.
+Importance: The state-of-the-art, bias-free backtester for the HTF (weekly) strategy.
 
-htf_simulator_advanced.py (Flagship Weekly Simulator)
-Importance: This is the state-of-the-art, bias-free backtester for the HTF (weekly) strategy, now featuring a highly flexible and robust risk management system.
+Accomplishment: It uses a "Scout and Sniper" architecture to cleanly separate the process of identifying a weekly setup from the decision to enter a trade. It implements the full suite of advanced conviction filters.
 
-Accomplishment: It uses a "Scout and Sniper" architecture to cleanly separate the process of identifying a weekly setup from the decision to enter a trade. It implements the full suite of advanced conviction filters and saves all its output logs to a dedicated strategy folder (simulator_htf_advanced/).
+Critical Logic (Scout and Sniper): The "Scout" runs EOD on Friday to generate a "Target List" for the entire following week. The "Sniper" then monitors this list intraday from Monday to Friday, validating any breakouts with the Conviction Engine. All calculations have been corrected for integrity.
 
-Critical Logic & Workflow (Scout and Sniper):
+monthly_tfl_simulator.py
 
-Scout Mission (EOD Friday): The Scout runs only once a week, after the market closes on Friday. It scans the weekly data to find valid pullback patterns and generates a "Target List" which is then valid for the entire following week.
+Importance: The state-of-the-art simulator for the Monthly Pullback Strategy.
 
-Sniper Mission (Intraday, Monday-Friday): The Sniper monitors the 15-minute data stream for only the stocks on the weekly Target List and validates any breakout using the full Advanced Conviction & Risk Engine.
+Accomplishment: It simulates the monthly strategy by adapting the Scout/Sniper model for a longer timeframe. It includes unique, timeframe-appropriate logic like an adaptive execution window and VIX-scaled profit targets.
 
-Flexible Trade Management (New):
+Critical Logic (Monthly Adaptation): The "Scout" runs EOD on the last trading day of the month to generate a Target List valid for the entire next month. The "Sniper" monitors this list intraday during the following month. All calculations have been corrected for integrity.
 
-stop_loss_mode: This configuration toggle allows the researcher to choose between two initial stop-loss methods: 'LOOKBACK' (the original method, using the lowest low of the last 5 days) or 'PERCENT' (a fixed percentage below the entry price).
+3. Analysis Scripts
+mae_analyzer_percent.py
 
-exit_strategy_mode: This toggle allows switching between the complex, multi-stage 'TRAILING' exit logic and a simpler, binary 'ATR_TARGET' exit model.
+Importance: A powerful, data-driven analysis tool for optimizing the stop-loss strategy of the percentage-based simulators.
 
-Calculation Integrity: The position sizing logic has been corrected to use the portfolio's equity from the start of the day (equity_at_sod), preventing unrealized profits from being used as leverage and ensuring realistic compounding.
+Accomplishment: It ingests one or more _trade_details.csv log files and analyzes the Maximum Adverse Excursion (MAE) and Maximum Favorable Excursion (MFE) of each trade. It runs "what-if" simulations to show how performance would change with different fixed percentage stop-losses.
 
-simulator_monthly_advanced.py (New Monthly Simulator)
-Importance: This is the new, state-of-the-art simulator for the Monthly Pullback Strategy, adapting the successful Scout/Sniper architecture for a much longer timeframe.
-
-Accomplishment: It simulates the monthly strategy with unique, timeframe-appropriate logic. It implements the full enhanced logging suite, including MAE tracking, and saves all logs to its dedicated folder (simulator_monthly_advanced/).
-
-Critical Logic & Workflow (Monthly Adaptation):
-
-Scout Mission (EOD, Last Trading Day of Month): The Scout runs only once a month. It scans the monthly charts for the pullback pattern and applies monthly-level quality filters (e.g., 10-month EMA, 12-month volume average). It then generates a "Target List" valid for the entire next month.
-
-Sniper Mission (Intraday, Full Month): The Sniper monitors the Target List intraday, but operates within an Adaptive Execution Window. It typically skips the first few volatile days of the month and then actively monitors for a set period (e.g., 15 trading days), which can be extended during high-VIX periods.
-
-Volatility-Adjusted Stop-Loss: A key innovation for this timeframe. The initial stop-loss is calculated dynamically using the stock's 6-month Average True Range (ATR), providing a volatility-normalized risk buffer appropriate for a long-term trade.
-
-Custom Risk Model: Features a toggleable 'profit_target_mode' that allows the profit target to be based on the wide ATR-based risk even when the actual stop-loss is a tighter, fixed percentage, enabling a unique "homerun" seeking methodology.
-
-4. Validation & Analysis Scripts
-validate_*_subset.py
-Importance: These are essential diagnostic tools used to ensure the logical integrity and correctness of the backtesting framework.
-
-Accomplishment: They compare the trade logs from a benchmark run and a simulator run and confirm that the set of trades taken by the simulator is a true and proper subset of the trades taken by its corresponding benchmark.
-
-Critical Logic: The core of the validation uses Python's set.issubset() operation on the unique setup_id generated for each trade in the log files.
-
-mae_analyzer.py (New)
-Importance: A powerful, data-driven analysis tool for optimizing stop-loss strategy. It moves beyond simple backtest results to perform a "what-if" simulation on trade outcomes.
-
-Accomplishment: It ingests one or more _trade_details.csv log files and analyzes the Maximum Adverse Excursion (MAE) of each trade. It simulates how the strategy's performance (Win Rate, Profit Factor, P&L) would have changed with a range of different, tighter stop-loss levels.
-
-Critical Logic & Features:
-
-Multi-Strategy Support: A --strategy flag allows it to correctly parse logs from either the htf or monthly simulators.
-
-Correlation with Summary: It automatically finds and displays the original performance metrics from the corresponding _summary.txt file, providing crucial context for the analysis.
-
-Holistic Analysis: It provides both a per-file analysis and a combined, holistic analysis of all trades from all supplied files.
-
-Smarter Recommendation: It uses a "Safe Zone" heuristic to provide a data-driven recommendation. It finds the tightest possible stop-loss that still preserves at least 95% of the original winning trades, identifying the most efficient risk-reward trade-off.
+Critical Logic: The core logic involves reading trade logs, calculating MAE/MFE percentages, and then iterating through a range of hypothetical stop-loss percentages to re-calculate performance metrics like Win Rate and Profit Factor for the trades that would have survived.

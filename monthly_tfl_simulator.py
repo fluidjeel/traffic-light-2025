@@ -30,7 +30,7 @@ config = {
 
     # --- DATA PIPELINE CONFIGURATION ---
     'data_pipeline_config': {
-        'use_universal_pipeline': False, # MASTER TOGGLE: Set to False to use legacy paths
+        'use_universal_pipeline': True, # MASTER TOGGLE: Set to False to use legacy paths
 
         # --- Universal Data Paths ---
         'universal_processed_folder': os.path.join('data', 'universal_processed'),
