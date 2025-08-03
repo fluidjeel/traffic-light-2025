@@ -1,19 +1,17 @@
-# simulator_monthly_advanced.py
+# monthly_tfl_simulator.py
 #
 # Description:
-# This is a new, state-of-the-art, bias-free backtesting simulator for a
-# Monthly Pullback Strategy, inspired by the HTF (weekly) framework.
+# A flexible version of the state-of-the-art, bias-free backtester for the
+# Monthly Pullback Strategy, capable of running on both legacy and universal
+# data pipelines. This script is based on the fully corrected v5.1 simulator.
 #
-# MODIFICATION (v5.3 - Overfitting & Stress-Test Features):
-# 1. ADDED: A 'regime_filter_config' to allow for disabling trading during
-#    unfavorable market conditions (e.g., high VIX or index below 200-day MA).
-# 2. ADDED: An 'exit_slippage_randomization' feature to simulate more
-#    realistic exit fills and stress-test profitability.
-# 3. UPDATED: Default stop-loss has been widened and R:R targets made more
-#    conservative as per external audit recommendations for robustness testing.
-#
-# MODIFICATION (v5.2 - Final Lookahead Bias Fixes):
-# - Fixed Market Strength & VIX Timing lookahead biases.
+# MODIFICATION (v1.0 - Universal Pipeline Integration):
+# 1. ADDED: A 'data_pipeline_config' section with a master toggle
+#    ('use_universal_pipeline') to switch between data sources.
+# 2. ADDED: Logic in the load_data function to dynamically select data paths
+#    and handle different intraday index filenames based on the selected pipeline.
+# 3. RETAINED: All critical flaw corrections (Position Sizing, VIX Lookahead,
+#    Slippage, Filters, etc.) are preserved from the base script.
 
 import pandas as pd
 import os
@@ -21,9 +19,8 @@ import math
 from datetime import datetime, time as dt_time, timedelta
 import sys
 import numpy as np
-import random
 
-# --- CONFIGURATION FOR THE MONTHLY ADVANCED SIMULATOR ---
+# --- CONFIGURATION FOR THE MONTHLY TFL SIMULATOR ---
 config = {
     # --- General Backtest Parameters ---
     'initial_capital': 1000000,
@@ -31,11 +28,24 @@ config = {
     'start_date': '2020-01-01',
     'end_date': '2025-07-16',
 
-    # --- Data & Logging Paths ---
-    'data_folder_base': 'data/processed',
-    'intraday_data_folder': 'historical_data_15min',
+    # --- NEW: DATA PIPELINE CONFIGURATION ---
+    'data_pipeline_config': {
+        'use_universal_pipeline': True, # MASTER TOGGLE: Set to False to use legacy paths
+
+        # --- Universal Data Paths ---
+        'universal_processed_folder': os.path.join('data', 'universal_processed'),
+        'universal_intraday_folder': os.path.join('data', 'universal_historical_data'),
+        
+        # --- Legacy Data Paths ---
+        'legacy_processed_folder': os.path.join('data', 'processed'),
+        'legacy_intraday_folder': 'historical_data_15min',
+    },
+
+    # --- Data & Logging Paths (These will be updated dynamically) ---
+    'data_folder_base': '',
+    'intraday_data_folder': '',
     'log_folder': 'backtest_logs',
-    'strategy_name': 'simulator_monthly_advanced',
+    'strategy_name': 'monthly_tfl_simulator',
 
     # --- Enhanced Logging Options ---
     'log_options': { 'log_trades': True, 'log_missed': True, 'log_summary': True, 'log_filtered': True },
@@ -51,7 +61,7 @@ config = {
     
     # --- Stop-Loss Configuration ---
     'stop_loss_mode': 'PERCENT',
-    'fixed_stop_loss_percent': 0.12, # UPDATED: Widened stop for stress-testing
+    'fixed_stop_loss_percent': 0.09,
     'atr_period_monthly': 6,
     'atr_multiplier_stop': 1.2,
 
@@ -82,25 +92,18 @@ config = {
     
     'vix_scaled_rr_config': {
         'use_vix_scaled_rr_target': True,
-        'vix_rr_scale': [ # UPDATED: More conservative R:R targets
-            {'vix_max': 15, 'rr': 2.5},
-            {'vix_max': 22, 'rr': 2.0},
-            {'vix_max': 30, 'rr': 1.5},
+        'vix_rr_scale': [
+            {'vix_max': 15, 'rr': 3.0},
+            {'vix_max': 22, 'rr': 2.5},
+            {'vix_max': 30, 'rr': 2.0},
             {'vix_max': 999, 'rr': 1.5}
         ]
     },
+    'profit_target_rr_calm': 2.0,
+    'profit_target_rr_high': 1.5,
     
     'use_aggressive_breakeven': True,
     'breakeven_buffer_percent': 0.0005,
-
-    # --- NEW: Stress-Testing & Realism Configuration ---
-    'regime_filter_config': {
-        'use_regime_filter': False, # Master toggle for the regime filter
-        'disable_trades_if_vix_above': 30,
-        'disable_trades_if_index_below_ma_period': 200, # Set to 0 to disable this check
-    },
-    'use_exit_slippage_randomization': False, # Master toggle for exit slippage
-    'exit_slippage_range_percent': 0.001, # Adds +/- 0.1% random noise to exits
 }
 
 # --- HELPER FUNCTIONS ---
@@ -124,6 +127,20 @@ class MonthlyAdvancedSimulator:
         self.filtered_log = []
 
     def load_data(self):
+        # --- ADDITIVE CHANGE: Dynamically set data paths based on config toggle ---
+        pipeline_cfg = self.cfg['data_pipeline_config']
+        if pipeline_cfg['use_universal_pipeline']:
+            print("--- Using UNIVERSAL Data Pipeline ---")
+            self.cfg['data_folder_base'] = pipeline_cfg['universal_processed_folder']
+            self.cfg['intraday_data_folder'] = pipeline_cfg['universal_intraday_folder']
+            intraday_index_filename_format = "{symbol}_15min.csv"
+        else:
+            print("--- Using LEGACY Data Pipeline ---")
+            self.cfg['data_folder_base'] = pipeline_cfg['legacy_processed_folder']
+            self.cfg['intraday_data_folder'] = pipeline_cfg['legacy_intraday_folder']
+            intraday_index_filename_format = "NIFTY_200_15min.csv" # Legacy filename
+        # --- END ADDITIVE CHANGE ---
+
         print("Loading all data into memory...")
         try:
             self.tradeable_symbols = pd.read_csv(self.cfg['nifty_list_csv'])['Symbol'].tolist()
@@ -140,10 +157,16 @@ class MonthlyAdvancedSimulator:
                         if not df.index.is_unique:
                             df = df[~df.index.duplicated(keep='first')]
                         data_map[symbol] = df
-                intraday_file = os.path.join(self.cfg['intraday_data_folder'], f"{symbol}_15min.csv")
-                if "NIFTY200_INDEX" in symbol: intraday_file = os.path.join(self.cfg['intraday_data_folder'], "NIFTY_200_15min.csv")
-                if os.path.exists(intraday_file): 
-                    df_intra = pd.read_csv(intraday_file, index_col='datetime', parse_dates=True)
+                
+                # --- ADDITIVE CHANGE: Handle different intraday filenames ---
+                intraday_filename = f"{symbol}_15min.csv"
+                if "NIFTY200_INDEX" in symbol:
+                    intraday_filename = intraday_index_filename_format.format(symbol=symbol)
+                # --- END ADDITIVE CHANGE ---
+                
+                intraday_file_path = os.path.join(self.cfg['intraday_data_folder'], intraday_filename)
+                if os.path.exists(intraday_file_path): 
+                    df_intra = pd.read_csv(intraday_file_path, index_col='datetime', parse_dates=True)
                     if not df_intra.index.is_unique:
                         df_intra = df_intra[~df_intra.index.duplicated(keep='first')]
                     self.intraday_data[symbol] = df_intra
@@ -169,33 +192,6 @@ class MonthlyAdvancedSimulator:
         self.generate_report()
 
     def scout_for_setups(self, month_end_date):
-        # --- NEW: Master Regime Filter ---
-        regime_cfg = self.cfg.get('regime_filter_config', {})
-        if regime_cfg.get('use_regime_filter', False):
-            try:
-                vix_df = self.daily_data[self.cfg['vix_symbol']]
-                vix_loc = vix_df.index.get_loc(month_end_date)
-                vix_close_t1 = vix_df.iloc[vix_loc - 1]['close'].item()
-
-                if vix_close_t1 > regime_cfg.get('disable_trades_if_vix_above', 999):
-                    print(f"\nRegime Filter: VIX ({vix_close_t1:.2f}) is above threshold. Disabling setups for next month.")
-                    return # Skip scouting for this month
-
-                ma_period = regime_cfg.get('disable_trades_if_index_below_ma_period', 0)
-                if ma_period > 0:
-                    index_df = self.daily_data[self.cfg['market_strength_index']]
-                    ma_col = f"ema_{ma_period}" # Assuming EMA, change to SMA if needed
-                    if ma_col in index_df.columns:
-                        if index_df.loc[month_end_date]['close'] < index_df.loc[month_end_date][ma_col]:
-                            print(f"\nRegime Filter: Index is below its {ma_period}-day MA. Disabling setups for next month.")
-                            return # Skip scouting
-                    else:
-                        print(f"\nWarning: MA column '{ma_col}' not found for regime filter. Please update indicator script.")
-
-            except (KeyError, IndexError):
-                pass # Continue if data is missing
-        # --- END NEW ---
-
         for symbol in self.tradeable_symbols:
             if symbol not in self.monthly_data or symbol not in self.daily_data: continue
             df_monthly = self.monthly_data[symbol]
@@ -356,20 +352,15 @@ class MonthlyAdvancedSimulator:
                     pos['highest_price_since_entry'] = max(pos.get('highest_price_since_entry', pos['entry_price']), candle['high'].item())
 
                 if 'target' in pos and candle['high'].item() >= pos['target']:
-                    exit_price = pos['target']
-                    # --- NEW: Apply random exit slippage if enabled ---
-                    if self.cfg.get('use_exit_slippage_randomization', False):
-                        slippage_mult = 1 + random.uniform(-self.cfg['exit_slippage_range_percent'], self.cfg['exit_slippage_range_percent'])
-                        exit_price *= slippage_mult
-                    # --- END NEW ---
-
                     if self.cfg.get('use_partial_profit_leg', False):
                         shares_to_sell = pos['shares'] // 2
+                        exit_price = pos['target']
                         exit_proceeds += shares_to_sell * exit_price
                         trade_log = self.create_enhanced_trade_log(pos, candle_time, exit_price, 'Partial Profit', shares_to_sell)
                         self.portfolio['trades'].append(trade_log)
                         pos.update({'shares': pos['shares'] - shares_to_sell, 'partial_exit': True, 'stop_loss': pos['entry_price']})
                     else:
+                        exit_price = pos['target']
                         exit_proceeds += pos['shares'] * exit_price
                         trade_log = self.create_enhanced_trade_log(pos, candle_time, exit_price, 'Profit Target', pos['shares'])
                         self.portfolio['trades'].append(trade_log)
@@ -378,10 +369,6 @@ class MonthlyAdvancedSimulator:
 
                 if pos['shares'] > 0 and candle['low'].item() <= pos['stop_loss']:
                     exit_price = pos['stop_loss']
-                    if self.cfg.get('use_exit_slippage_randomization', False):
-                        slippage_mult = 1 - random.uniform(0, self.cfg['exit_slippage_range_percent']) # Slippage is always negative on stops
-                        exit_price *= slippage_mult
-
                     exit_proceeds += pos['shares'] * exit_price
                     trade_log = self.create_enhanced_trade_log(pos, candle_time, exit_price, 'Stop-Loss', pos['shares'])
                     self.portfolio['trades'].append(trade_log)

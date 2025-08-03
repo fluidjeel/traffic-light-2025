@@ -5,29 +5,20 @@
 # It reads raw daily data and generates clean, processed data for all required
 # timeframes (daily, 2day, weekly, monthly) with all necessary indicators.
 #
-# MODIFICATION: This version now calculates both ema_30 and ema_50 to ensure
-# the backtester has all the data it needs for its filters.
+# MODIFICATION (v6.1 - Added EMA_10 for Monthly Filter):
+# 1. ADDED: Calculation for a 10-period EMA to support the 'use_ema_filter'
+#    in the monthly simulator.
 #
-# MODIFICATION 2: Explicitly added 'INDIAVIX' to the list of symbols to process
-# to support the dynamic slippage model.
-#
-# MODIFICATION 3 (HTF ENHANCEMENT):
-# 1. Ensured that all indicators, including volume_20_sma, are calculated
-#    for all higher timeframes (weekly, monthly) to support the HTF backtester.
-#
-# MODIFICATION 4 (MONTHLY SIMULATOR FIX):
-# 1. Added calculation for atr_6 to support the monthly simulator's stop-loss logic.
-#
-# MODIFICATION 5 (DATA CLEANUP FIX):
-# 1. Added logic to drop duplicate index entries from all dataframes before saving
-#    to prevent 'InvalidIndexError' in downstream simulators.
+# MODIFICATION (v6.0 - Regime Filter Support):
+# 1. ADDED: Calculation for a 200-period EMA to support the new regime filter
+#    in the advanced simulators.
 
 import pandas as pd
 import os
 import sys
 import pandas_ta as ta
 
-def calculate_all_indicators(df, rs_period=30, ema_period=30, volume_ma_period=20, atr_period=14, atr_ma_period=30, regime_ma_period=50):
+def calculate_all_indicators(df, rs_period=30, ema_period=30, monthly_ema_period=10, volume_ma_period=20, atr_period=14, atr_ma_period=30, regime_ma_period=50, long_term_ma_period=200):
     """Calculates all required technical indicators on a given dataframe."""
     if df.empty:
         return df
@@ -35,8 +26,16 @@ def calculate_all_indicators(df, rs_period=30, ema_period=30, volume_ma_period=2
     # EMA for strategy trend
     df[f'ema_{ema_period}'] = ta.ema(df['close'], length=ema_period)
     
+    # --- NEW: EMA for Monthly Strategy Filter ---
+    if monthly_ema_period > 0:
+        df[f'ema_{monthly_ema_period}'] = ta.ema(df['close'], length=monthly_ema_period)
+
     # EMA for market regime filter
     df[f'ema_{regime_ma_period}'] = ta.ema(df['close'], length=regime_ma_period)
+
+    # EMA for Long-Term Regime Filter
+    if long_term_ma_period > 0:
+        df[f'ema_{long_term_ma_period}'] = ta.ema(df['close'], length=long_term_ma_period)
     
     # Volume MA
     df[f'volume_{volume_ma_period}_sma'] = ta.sma(df['volume'], length=volume_ma_period)
@@ -51,7 +50,7 @@ def calculate_all_indicators(df, rs_period=30, ema_period=30, volume_ma_period=2
         if f'atr_{atr_period}' in df.columns:
             df[f'atr_{atr_ma_period}_ma'] = ta.sma(df[f'atr_{atr_period}'], length=atr_ma_period)
     
-    # --- MONTHLY SIMULATOR FIX: ADDED ATR_6 CALCULATION ---
+    # ATR_6 for monthly simulator
     atr_6_series = ta.atr(df['high'], df['low'], df['close'], length=6)
     if atr_6_series is not None and not atr_6_series.empty:
         df['atr_6'] = atr_6_series
@@ -100,7 +99,6 @@ def main():
         # 3. Read and prepare the daily data
         try:
             df_daily = pd.read_csv(input_path, index_col='datetime', parse_dates=True)
-            # --- MODIFICATION: Drop duplicates immediately after reading ---
             df_daily = df_daily[~df_daily.index.duplicated(keep='last')]
             df_daily.sort_index(inplace=True)
             if df_daily.empty:
@@ -140,7 +138,6 @@ def main():
                 print(f"  > Warning: No {tf_name} data after resampling. Skipping.")
                 continue
             
-            # --- MODIFICATION: Drop duplicates from higher timeframe data as well ---
             df_htf = df_htf[~df_htf.index.duplicated(keep='last')]
             
             print(f"  > Calculating indicators for {tf_name} timeframe...")

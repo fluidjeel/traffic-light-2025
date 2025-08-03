@@ -5,22 +5,13 @@
 # It has been upgraded to include the intelligent features from the original
 # scrapers, such as incremental updates and robust error handling.
 #
-# Functionality:
-# - Correctly authenticates using the fyers_apiv3 library and a long-lived access token.
-# - Intelligently updates data by fetching only new records since the last download.
-# - Provides a --force flag to re-download all data from the beginning.
-# - Scrapes Daily and 15-Minute historical data for both Equities and Indices.
-# - Saves all data to a single, unified directory: 'data/historical_data/'.
+# MODIFICATION (v1.3 - Final Index Symbol Fix):
+# - FIXED: The symbol formatting for INDIAVIX is now corrected by adding it
+#   to the FYERS_INDEX_SYMBOLS mapping, ensuring it gets the proper '-INDEX' suffix.
 #
-# Usage:
-#   - To intelligently update all data (default):
-#     python universal_fyers_scraper.py
-#
-#   - To force a full re-download of all data:
-#     python universal_fyers_scraper.py --force
-#
-#   - To update only a specific interval (e.g., daily):
-#     python universal_fyers_scraper.py --interval daily
+# MODIFICATION (v1.2 - Robust Symbol Loading):
+# - FIXED: An 'EmptyDataError' that occurred when trying to download only
+#   indices.
 
 import os
 import sys
@@ -31,7 +22,6 @@ import time
 import json
 
 # --- Import Configuration ---
-# Imports credentials (CLIENT_ID, SECRET_KEY, etc.) from a local config.py file.
 try:
     import config
 except ImportError:
@@ -68,14 +58,13 @@ SCRIPT_CONFIG = {
 # This dictionary maps the human-readable index names to the Fyers API's specific symbol format.
 FYERS_INDEX_SYMBOLS = {
     "NIFTY200_INDEX": "NSE:NIFTY200-INDEX",
-    "INDIAVIX": "NSE:INDIAVIX"
+    "INDIAVIX": "NSE:INDIAVIX-INDEX" # CORRECTED: Added INDIAVIX to the mapping
 }
 
 
 def get_access_token():
     """
     Handles the Fyers authentication flow to get the access token.
-    Reads from a file if available, otherwise generates a new one via user input.
     """
     if os.path.exists(SCRIPT_CONFIG["token_file"]):
         with open(SCRIPT_CONFIG["token_file"], 'r') as f:
@@ -133,7 +122,6 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
                 
                 df = pd.DataFrame(candles, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
                 df['datetime'] = pd.to_datetime(df['datetime'], unit='s')
-                # Fyers API provides data in UTC, convert to IST for consistency
                 df['datetime'] = df['datetime'] + pd.Timedelta(hours=5, minutes=30)
                 df.set_index('datetime', inplace=True)
                 return df
@@ -143,7 +131,7 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
             print(f"    - An exception occurred (Attempt {i+1}): {e}")
         
         if i < SCRIPT_CONFIG["api_retries"] - 1:
-            time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"] * 2) # Longer delay on retry
+            time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"] * 2)
 
     print(f"    - Failed to fetch data for {symbol} after {SCRIPT_CONFIG['api_retries']} attempts.")
     return pd.DataFrame()
@@ -152,13 +140,14 @@ def scrape_data_for_symbols(fyers_client, symbol_list, interval, file_suffix, fo
     """
     Iterates through symbols, intelligently fetching and updating data.
     """
+    if not symbol_list:
+        print(f"\n--- Symbol list is empty for interval '{interval}'. Skipping scrape. ---")
+        return
+
     print(f"\n--- Starting Scrape for {len(symbol_list)} symbols | Interval: {interval} ---")
     resolution = "D" if interval == "daily" else "15"
 
-    # Adjust batch size based on interval to handle API limitations
-    batch_months = 6
-    if interval == "15min":
-        batch_months = 2
+    batch_months = 6 if interval == "daily" else 2
 
     for i, symbol_name in enumerate(symbol_list):
         print(f"\nProcessing {symbol_name} ({i+1}/{len(symbol_list)})...")
@@ -205,7 +194,11 @@ def scrape_data_for_symbols(fyers_client, symbol_list, interval, file_suffix, fo
             
             print(f"    > Fetching batch: {from_date_str} to {to_date_str}")
             
-            fyers_symbol = FYERS_INDEX_SYMBOLS.get(symbol_name, f"NSE:{symbol_name}-EQ")
+            # This logic now correctly handles all indices in the mapping
+            if symbol_name in FYERS_INDEX_SYMBOLS:
+                fyers_symbol = FYERS_INDEX_SYMBOLS[symbol_name]
+            else:
+                fyers_symbol = f"NSE:{symbol_name}-EQ"
             
             batch_df = get_historical_data(fyers_client, fyers_symbol, resolution, from_date_str, to_date_str)
             
@@ -224,7 +217,6 @@ def scrape_data_for_symbols(fyers_client, symbol_list, interval, file_suffix, fo
             new_data_df.to_csv(output_path, mode='w', header=True, index_label='datetime')
             print(f"  > Success: Saved {len(new_data_df)} records to {output_path}")
         else:
-            # Append new data without writing the header
             new_data_df.to_csv(output_path, mode='a', header=False)
             print(f"  > Success: Appended {len(new_data_df)} new records to {output_path}")
 
@@ -237,7 +229,6 @@ def main():
     parser.add_argument('--force', action='store_true', help='Force a full re-download of data, ignoring existing files.')
     args = parser.parse_args()
 
-    # --- Fyers Client Initialization ---
     access_token = get_access_token()
     if not access_token:
         print("Could not obtain access token. Exiting.")
@@ -255,23 +246,23 @@ def main():
         print(f"Error initializing Fyers API client: {e}")
         sys.exit(1)
     
-    # --- Setup ---
     os.makedirs(SCRIPT_CONFIG["output_dir"], exist_ok=True)
     print(f"Output directory set to: '{SCRIPT_CONFIG['output_dir']}'")
     
-    try:
-        equity_symbols = pd.read_csv(SCRIPT_CONFIG["nifty_list_csv"])["Symbol"].tolist()
-    except FileNotFoundError:
-        print(f"FATAL ERROR: Symbol file '{SCRIPT_CONFIG['nifty_list_csv']}' not found. Exiting.")
-        sys.exit(1)
+    equity_symbols = []
+    if SCRIPT_CONFIG["nifty_list_csv"]:
+        try:
+            equity_symbols = pd.read_csv(SCRIPT_CONFIG["nifty_list_csv"])["Symbol"].tolist()
+        except FileNotFoundError:
+            print(f"WARNING: Equity file '{SCRIPT_CONFIG['nifty_list_csv']}' not found. Skipping equities.")
+        except pd.errors.EmptyDataError:
+             print(f"WARNING: Equity file '{SCRIPT_CONFIG['nifty_list_csv']}' is empty. Skipping equities.")
         
     index_symbols = SCRIPT_CONFIG["index_list"]
 
-    # --- Execution Logic ---
     run_daily = not args.interval or args.interval == 'daily'
     run_15min = not args.interval or args.interval == '15min'
     
-    # Run 15min scrapers first, then daily
     if run_15min:
         scrape_data_for_symbols(fyers, equity_symbols, "15min", "15min", args.force)
         scrape_data_for_symbols(fyers, index_symbols, "15min", "15min", args.force)
