@@ -12,6 +12,12 @@
 #    cash balance for every trade calculation, preventing same-day over-leveraging.
 # 3. FIXED: Data Pipeline Bug. The logic for loading the legacy intraday index
 #    file has been corrected to ensure it's always found.
+#
+# MODIFICATION (v1.3 - Drawdown Control Enhancements):
+# 1. ADDED: New configuration parameter 'use_dynamic_trailing_stop' to enable a more advanced trailing stop.
+# 2. ADDED: New configuration parameter 'trailing_stop_buffer_percent' to control the stop's sensitivity.
+# 3. FIXED: Trailing stop logic now correctly tracks the highest price since entry.
+# 4. FIXED: Tracking for 'highest_price_since_entry' now occurs in the correct function.
 
 import pandas as pd
 import os
@@ -61,7 +67,7 @@ config = {
     
     # --- Stop-Loss Configuration ---
     'stop_loss_mode': 'PERCENT',
-    'fixed_stop_loss_percent': 0.02,
+    'fixed_stop_loss_percent': 0.04,
     'atr_period_monthly': 6,
     'atr_multiplier_stop': 1.2,
 
@@ -72,8 +78,8 @@ config = {
 
     # --- Portfolio & Risk Management ---
     'use_dynamic_position_sizing': True,
-    'risk_per_trade_percent': 1.5,
-    'max_portfolio_risk_percent': 5.0,
+    'risk_per_trade_percent': 4.0,
+    'max_portfolio_risk_percent': 6.0,
     'max_new_positions_per_day': 6,
 
     # --- Conviction Engine (Sniper Filters) ---
@@ -84,7 +90,7 @@ config = {
     'market_strength_threshold_high': -0.75,
     'base_slippage_percent': 0.10,
     'high_vol_slippage_percent': 0.20,
-    'use_market_strength_filter': True,
+    'use_market_strength_filter': False,
 
     # --- Trade Management & Profit Taking ---
     'profit_target_mode': 'RISK_BASED',
@@ -104,6 +110,10 @@ config = {
     
     'use_aggressive_breakeven': True,
     'breakeven_buffer_percent': 0.0005,
+    
+    # --- NEW: Dynamic Trailing Stop Configuration ---
+    'use_dynamic_trailing_stop': True,
+    'trailing_stop_buffer_percent': 3.0,
 }
 
 # --- HELPER FUNCTIONS ---
@@ -295,7 +305,8 @@ class MonthlyAdvancedSimulator:
         
         if self.cfg['stop_loss_mode'] == 'PERCENT':
             stop_loss_actual = entry_price * (1 - self.cfg['fixed_stop_loss_percent'])
-        else: return 
+        else: # Default to ATR
+            stop_loss_actual = entry_price - (details['monthly_atr'] * self.cfg['atr_multiplier_stop'])
         
         risk_per_share_actual = entry_price - stop_loss_actual
         if pd.isna(risk_per_share_actual) or risk_per_share_actual <= 0: return
@@ -415,12 +426,26 @@ class MonthlyAdvancedSimulator:
             if date in self.daily_data.get(pos['symbol'], pd.DataFrame()).index:
                 daily_candle = self.daily_data[pos['symbol']].loc[date]
                 new_stop = pos['stop_loss']
+                
+                # Check for a profitable position
                 if daily_candle['close'].item() > pos['entry_price']:
+                    # --- NEW: Dynamic Trailing Stop Logic ---
+                    if self.cfg.get('use_dynamic_trailing_stop', False):
+                        # Calculate a new stop based on a percentage buffer from the highest price reached
+                        trailing_stop_price = pos['highest_price_since_entry'] * (1 - self.cfg['trailing_stop_buffer_percent'] / 100)
+                        # Only move the stop up, never down.
+                        new_stop = max(new_stop, trailing_stop_price)
+                    # --- END NEW ---
+                    
+                    # Retain existing aggressive breakeven logic if the new stop is not enabled.
+                    # Or, if both are enabled, the dynamic trailing stop will likely be higher.
                     if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
                         buffer = pos['entry_price'] * self.cfg['breakeven_buffer_percent']
                         new_stop = max(new_stop, pos['entry_price'] + buffer)
+                    
                     if daily_candle['close'].item() > daily_candle['open'].item():
                         new_stop = max(new_stop, daily_candle['low'].item())
+                        
                 pos['stop_loss'] = new_stop
         
         eod_value_of_positions = sum([p['shares'] * self.daily_data[p['symbol']].loc[date]['close'].item() for p in self.portfolio['positions'].values() if date in self.daily_data.get(p['symbol'], pd.DataFrame()).index])

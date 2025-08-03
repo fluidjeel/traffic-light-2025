@@ -37,13 +37,17 @@ def analyze_excursions(trades_df, regime_name="Overall"):
         return
 
     print(f"\n{'='*25} EXCURSION ANALYSIS: {regime_name.upper()} REGIME {'='*25}")
-    
+
     winners = trades_df[trades_df['pnl'] > 0].copy()
     losers = trades_df[trades_df['pnl'] <= 0].copy()
 
     # --- MFE Analysis (Profit-Taking Efficiency) ---
     print("\n[ MFE ANALYSIS (Profit-Taking Efficiency) ]")
-    if not winners.empty and 'mfe_percent' in winners.columns:
+    
+    # CRITICAL FIX: Only perform MFE analysis if the required columns exist.
+    # This prevents the KeyError if the backtester log doesn't include 'mfe_percent'.
+    if not winners.empty and 'mfe_percent' in winners.columns and 'captured_pct' in winners.columns:
+        # Calculate efficiency only if the necessary columns are present.
         winners['efficiency'] = (winners['captured_pct'] / winners['mfe_percent']).replace([np.inf, -np.inf], 0)
         avg_mfe_winners = winners['mfe_percent'].mean()
         avg_captured = winners['captured_pct'].mean()
@@ -54,6 +58,7 @@ def analyze_excursions(trades_df, regime_name="Overall"):
     else:
         print("  - No winning trades with MFE data to analyze.")
 
+    # Apply the same check for losing trades
     if not losers.empty and 'mfe_percent' in losers.columns:
         avg_mfe_losers = losers['mfe_percent'].mean()
         print(f"  - Losing Trades Avg. Peak Profit (MFE):  {avg_mfe_losers:.2f}% (before turning to loss)")
@@ -84,10 +89,14 @@ def analyze_excursions(trades_df, regime_name="Overall"):
             print(f"    - ID: {trade['setup_id']}, MAE: {trade['mae_percent']:.2f}%, File: {trade['source_file']}")
 
         # Winners with the worst profit capture (left the most money on the table)
-        low_efficiency_winners = winners.sort_values(by='efficiency', ascending=True).head(INSIGHT_TRADE_COUNT)
-        print("\n  - Top Winning Trades with Lowest Profit Capture Efficiency:")
-        for _, trade in low_efficiency_winners.iterrows():
-            print(f"    - ID: {trade['setup_id']}, Captured: {trade['captured_pct']:.2f}% of {trade['mfe_percent']:.2f}%, File: {trade['source_file']}")
+        # CRITICAL FIX: Only attempt this if the 'efficiency' column has been created.
+        if 'efficiency' in winners.columns:
+            low_efficiency_winners = winners.sort_values(by='efficiency', ascending=True).head(INSIGHT_TRADE_COUNT)
+            print("\n  - Top Winning Trades with Lowest Profit Capture Efficiency:")
+            for _, trade in low_efficiency_winners.iterrows():
+                print(f"    - ID: {trade['setup_id']}, Captured: {trade['captured_pct']:.2f}% of {trade['mfe_percent']:.2f}%, File: {trade['source_file']}")
+        else:
+            print("\n  - Skipping Top Winning Trades with Lowest Profit Capture Efficiency: MFE data is missing.")
     else:
         print("  - No winning trades to generate insights from.")
 

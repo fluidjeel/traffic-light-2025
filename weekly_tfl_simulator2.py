@@ -12,6 +12,10 @@
 # 3. FIXED: Data Pipeline Bug. The logic for loading the legacy intraday index
 #    file has been corrected to ensure it's always found.
 # 4. FIXED: Restored the missing logic to save all log files correctly.
+#
+# MODIFICATION (v2.2 - MFE Data Logging):
+# 1. ADDED: Logic to track Maximum Favorable Excursion (MFE) for each open position.
+# 2. ADDED: MFE-related data (mfe_price, mfe_percent, captured_pct) to the trade log.
 
 import pandas as pd
 import os
@@ -79,8 +83,8 @@ config = {
     # --- Trade Management & Profit Taking (Trailing Logic) ---
     'use_partial_profit_leg': True,
     'use_dynamic_profit_target': True,
-    'profit_target_rr_calm': 3.0,
-    'profit_target_rr_high': 1.5,
+    'profit_target_rr_calm': 1.5,
+    'profit_target_rr_high': 1.0,
     'use_aggressive_breakeven': True,
     'breakeven_buffer_percent': 0.0005,
 
@@ -329,7 +333,7 @@ class HtfAdvancedSimulator:
         if shares > 0 and (shares * entry_price) <= self.portfolio['cash']:
             log_entry['status'] = 'FILLED'
             self.portfolio['cash'] -= shares * entry_price
-            self.portfolio['positions'][f"{symbol}_{candle_time}"] = {'symbol': symbol, 'entry_date': candle_time, 'entry_price': entry_price, 'stop_loss': stop_loss, 'shares': shares, 'target': target_price, 'partial_exit': False, 'initial_shares': shares, 'setup_id': details['setup_id'], 'lowest_price_since_entry': entry_price}
+            self.portfolio['positions'][f"{symbol}_{candle_time}"] = {'symbol': symbol, 'entry_date': candle_time, 'entry_price': entry_price, 'stop_loss': stop_loss, 'shares': shares, 'target': target_price, 'partial_exit': False, 'initial_shares': shares, 'lowest_price_since_entry': entry_price, 'highest_price_since_entry': entry_price}
         elif shares > 0:
             log_entry['status'] = 'MISSED_CAPITAL'
         else:
@@ -341,7 +345,14 @@ class HtfAdvancedSimulator:
         for pos_id, pos in list(self.portfolio['positions'].items()):
             try:
                 candle = self.intraday_data[pos['symbol']].loc[candle_time]
+                
+                # Update MAE tracking
                 pos['lowest_price_since_entry'] = min(pos.get('lowest_price_since_entry', pos['entry_price']), candle['low'])
+                
+                # --- NEW: Update MFE tracking ---
+                pos['highest_price_since_entry'] = max(pos.get('highest_price_since_entry', pos['entry_price']), candle['high'])
+                # --- END NEW ---
+
             except (KeyError, IndexError):
                 continue
 
@@ -349,9 +360,16 @@ class HtfAdvancedSimulator:
                 shares_to_sell = pos['shares'] // 2
                 exit_price = pos['target']
                 exit_proceeds += shares_to_sell * exit_price
+                
+                # Log MAE and MFE data for the partial exit
                 mae_price = pos['lowest_price_since_entry']
+                mfe_price = pos['highest_price_since_entry']
                 mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
-                trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * shares_to_sell, 'exit_type': 'Partial Profit', 'mae_price': mae_price, 'mae_percent': mae_percent})
+                mfe_percent = ((mfe_price - pos['entry_price']) / pos['entry_price']) * 100
+                captured_pct = ((exit_price - pos['entry_price']) / pos['entry_price']) * 100
+                
+                trade_log = pos.copy()
+                trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * shares_to_sell, 'exit_type': 'Partial Profit', 'mae_price': mae_price, 'mae_percent': mae_percent, 'mfe_price': mfe_price, 'mfe_percent': mfe_percent, 'captured_pct': captured_pct})
                 self.portfolio['trades'].append(trade_log)
                 pos['shares'] -= shares_to_sell
                 pos['partial_exit'] = True
@@ -360,9 +378,16 @@ class HtfAdvancedSimulator:
             if pos['shares'] > 0 and candle['low'] <= pos['stop_loss']:
                 exit_price = pos['stop_loss']
                 exit_proceeds += pos['shares'] * exit_price
+                
+                # Log MAE and MFE data for the final exit
                 mae_price = pos['lowest_price_since_entry']
+                mfe_price = pos['highest_price_since_entry']
                 mae_percent = ((pos['entry_price'] - mae_price) / pos['entry_price']) * 100
-                trade_log = pos.copy(); trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', 'mae_price': mae_price, 'mae_percent': mae_percent})
+                mfe_percent = ((mfe_price - pos['entry_price']) / pos['entry_price']) * 100
+                captured_pct = ((exit_price - pos['entry_price']) / pos['entry_price']) * 100
+
+                trade_log = pos.copy()
+                trade_log.update({'exit_date': candle_time, 'exit_price': exit_price, 'pnl': (exit_price - pos['entry_price']) * pos['shares'], 'exit_type': 'Stop-Loss', 'mae_price': mae_price, 'mae_percent': mae_percent, 'mfe_price': mfe_price, 'mfe_percent': mfe_percent, 'captured_pct': captured_pct})
                 self.portfolio['trades'].append(trade_log)
                 to_remove.append(pos_id)
         
