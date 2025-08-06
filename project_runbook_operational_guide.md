@@ -41,7 +41,28 @@ For Weekly HTF Strategy: python weekly_tfl_simulator.py
 
 For Monthly Strategy: python monthly_tfl_simulator.py
 
-Step 4: Perform Advanced Stop-Loss Analysis
+Step 4: Run Dedicated Scanner & Analyzer Scripts
+After ensuring your data is processed, use the dedicated scanner scripts to identify signals and the analyzer scripts to evaluate their R:R performance. This step is crucial for filter optimization.
+
+Run the Daily Entry Scanner:
+python daily_entry_scanner.py
+
+Run the Daily Signal Analyzer:
+python daily_signal_analyzer.py
+
+Run the Daily Signal Characterizer:
+python daily_signal_characterizer.py
+
+Run the Weekly Entry Scanner:
+python weekly_entry_scanner.py
+
+Run the Weekly Signal Analyzer:
+python weekly_signal_analyzer.py
+
+Run the Weekly Signal Characterizer:
+python weekly_signal_characterizer.py
+
+Step 5: Perform Advanced Stop-Loss Analysis
 After generating one or more backtest logs, use the MAE Analyzer to perform a data-driven "what-if" analysis on your stop-loss strategy.
 
 Run the MAE Analyzer on a specific strategy's logs:
@@ -50,7 +71,7 @@ python mae_analyzer_percent.py --strategy <strategy_name>
 
 (Replace <strategy_name> with the folder name, e.g., monthly_tfl_simulator)
 
-Step 5: Analyze All Results
+Step 6: Analyze All Results
 Navigate to the newly created subdirectory within backtest_logs (e.g., backtest_logs/monthly_tfl_simulator/). A thorough analysis should proceed as follows:
 
 Start with the Summary (_summary.txt): Get a high-level overview of the performance and confirm the input parameters.
@@ -69,7 +90,7 @@ This section details the specific, timed activities required to run the realisti
 A. Daily Strategy Execution (daily_tfl_simulator.py)
 This strategy identifies a setup on Day T-1 and attempts to execute it on Day T.
 
-Post-Market / End-of-Day (EOD) on Day T-1: The script scans the completed daily data, identifies patterns, applies EOD quality filters, and generates a watchlist for the next trading day.
+Post-Market / End-of-Day (EOD) on Day T-1: The system scans the daily charts for the core pullback pattern and applies EOD quality filters to generate a watchlist for the next trading day.
 
 Intraday during Day T: The script monitors 15-minute data for stocks on the watchlist. When a breakout occurs, it immediately checks the real-time Conviction Engine before simulating an entry.
 
@@ -78,11 +99,11 @@ This strategy uses the "Scout and Sniper" model to separate weekly setup discove
 
 Post-Market / End-of-Day (EOD) on Friday: The "Scout" scans the completed weekly charts to identify all valid pullback patterns and generates a "Target List" for the entire following week.
 
-Intraday during the Following Week (Monday - Friday): The "Sniper" monitors 15-minute data for stocks on the Target List and validates any breakout using the full Conviction Engine.
+Intraday during the Following Week, Monday to Friday: The "Sniper" monitors 15-minute data for stocks on the Target List and validates any breakout using the full Conviction Engine.
 
 C. Monthly Strategy Execution (monthly_tfl_simulator.py)
 This strategy adapts the Scout/Sniper model for a much longer timeframe.
 
-Post-Market / End-of-Day (EOD) on the Last Trading Day of the Month: The "Scout" scans the completed monthly charts to identify valid pullback patterns and generates a "Target List" valid for the entire next month.
+Post-Market / End-of-Day (EOD) on the Last Trading Day of the Month: The "Scout" scans the monthly charts to identify valid pullback patterns and generates a "Target List" valid for the entire next month.
 
-Intraday during the Following Month: The "Sniper" monitors 15-minute data for stocks on the month's Target List, operating within an Adaptive Execution Window and validating breakouts against the Conviction Engine.
+Intraday during the Following Month: The "Sniper" monitors the Target List intraday. It operates within an Adaptive Execution Window, typically ignoring the first few volatile days of the month and then monitoring for a set period for a breakout, which is then validated against the Conviction Engine.

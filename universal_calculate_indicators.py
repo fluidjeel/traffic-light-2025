@@ -2,113 +2,130 @@
 #
 # Description:
 # A universal indicator calculation script designed to work with the output of
-# the 'universal_fyers_scraper.py'. It reads the raw daily data from the
-# unified historical data folder, calculates all necessary indicators, resamples
-# to higher timeframes, and saves the processed files for the simulators.
+# the 'universal_fyers_scraper.py'.
 #
-# MODIFICATION (v1.0):
-# - Updated input directory and filename conventions to align with the
-#   universal data pipeline.
-# - Preserved all core calculation logic from the previous version.
+# MODIFICATION (v1.4 - Added Turnover Calculation):
+# 1. ADDED: Calculation for daily 'turnover' (close * volume).
+# 2. ADDED: Calculation for the 20-day SMA of turnover ('turnover_20_sma').
+#
+# MODIFICATION (v1.3 - Bug Fix):
+# 1. FIXED: A TypeError that occurred during MACD calculation when the input
+#    dataframe was too short.
 
 import pandas as pd
 import os
 import sys
 import pandas_ta as ta
+import numpy as np
 
-def calculate_all_indicators(df, rs_period=30, ema_period=30, monthly_ema_period=10, volume_ma_period=20, atr_period=14, atr_ma_period=30, regime_ma_period=50, long_term_ma_period=200):
+def calculate_all_indicators(df):
     """Calculates all required technical indicators on a given dataframe."""
     if df.empty:
         return df
     
-    # Standard EMA for daily/weekly strategies
-    df[f'ema_{ema_period}'] = ta.ema(df['close'], length=ema_period)
-    
-    # EMA for the monthly strategy's trend filter
-    if monthly_ema_period > 0:
-        df[f'ema_{monthly_ema_period}'] = ta.ema(df['close'], length=monthly_ema_period)
+    # --- Trend Indicators ---
+    emas = [8, 10, 20, 30, 50, 100, 200]
+    for length in emas:
+        df[f'ema_{length}'] = ta.ema(df['close'], length=length)
 
-    # EMA for the daily market regime filter
-    df[f'ema_{regime_ma_period}'] = ta.ema(df['close'], length=regime_ma_period)
+    # --- Momentum Indicators ---
+    df['rsi_14'] = ta.rsi(df['close'], length=14)
+    
+    try:
+        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+        if isinstance(macd, pd.DataFrame) and 'MACD_12_26_9' in macd.columns:
+            df['macd_12_26_9'] = macd['MACD_12_26_9']
+            df['macdh_12_26_9'] = macd['MACDh_12_26_9']
+            df['macds_12_26_9'] = macd['MACDs_12_26_9']
+    except Exception:
+        df['macd_12_26_9'] = np.nan
+        df['macdh_12_26_9'] = np.nan
+        df['macds_12_26_9'] = np.nan
 
-    # EMA for the long-term market regime filter
-    if long_term_ma_period > 0:
-        df[f'ema_{long_term_ma_period}'] = ta.ema(df['close'], length=long_term_ma_period)
+    try:
+        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3, smooth_k=3)
+        if stoch is not None and not stoch.empty:
+            df['stoch_k_14_3_3'] = stoch['STOCHk_14_3_3']
+            df['stoch_d_14_3_3'] = stoch['STOCHd_14_3_3']
+    except Exception:
+        df['stoch_k_14_3_3'] = np.nan
+        df['stoch_d_14_3_3'] = np.nan
+        
+    df['return_30'] = df['close'].pct_change(periods=30) * 100
+
+    # --- Volatility Indicators ---
+    atr_14 = ta.atr(df['high'], df['low'], df['close'], length=14)
+    if atr_14 is not None and not atr_14.empty:
+        df['atr_14'] = atr_14
+        df['atr_14_pct'] = (df['atr_14'] / df['close']) * 100
+
+    atr_6 = ta.atr(df['high'], df['low'], df['close'], length=6)
+    if atr_6 is not None and not atr_6.empty:
+        df['atr_6'] = atr_6
+
+    bbands = ta.bbands(df['close'], length=20, std=2)
+    if bbands is not None and not bbands.empty:
+        df['bb_upper_20_2'] = bbands['BBU_20_2.0']
+        df['bb_middle_20_2'] = bbands['BBM_20_2.0']
+        df['bb_lower_20_2'] = bbands['BBL_20_2.0']
+
+    # --- Volume Indicators ---
+    df['obv'] = ta.obv(df['close'], df['volume'])
+    df['volume_20_sma'] = ta.sma(df['volume'], length=20)
+    df['volume_50_sma'] = ta.sma(df['volume'], length=50)
     
-    # Volume Simple Moving Average
-    df[f'volume_{volume_ma_period}_sma'] = ta.sma(df['volume'], length=volume_ma_period)
-    
-    # Relative Strength (simple percentage return)
-    df[f'return_{rs_period}'] = df['close'].pct_change(periods=rs_period) * 100
-    
-    # Standard ATR
-    atr_series = ta.atr(df['high'], df['low'], df['close'], length=atr_period)
-    if atr_series is not None and not atr_series.empty:
-        df[f'atr_{atr_period}'] = atr_series
-        if f'atr_{atr_period}' in df.columns:
-            df[f'atr_{atr_ma_period}_ma'] = ta.sma(df[f'atr_{atr_period}'], length=atr_ma_period)
-    
-    # ATR with a 6-period length for the monthly simulator
-    atr_6_series = ta.atr(df['high'], df['low'], df['close'], length=6)
-    if atr_6_series is not None and not atr_6_series.empty:
-        df['atr_6'] = atr_6_series
+    ### MODIFICATION START: Added Turnover Calculation ###
+    df['turnover'] = df['close'] * df['volume']
+    df['turnover_20_sma'] = ta.sma(df['turnover'], length=20)
+    ### MODIFICATION END ###
+
+    # --- Custom Price Action Indicators ---
+    df['52_week_high'] = df['high'].rolling(window=252, min_periods=1).max()
+    df['prox_52w_high'] = ((df['close'] - df['52_week_high']) / df['52_week_high']) * 100
+
+    candle_range = df['high'] - df['low']
+    body_size = abs(df['close'] - df['open'])
+    df['body_ratio'] = np.where(candle_range > 0, body_size / candle_range, 0)
     
     return df
 
 def main():
     """Main function to run the entire data processing pipeline."""
-    print("--- Starting Universal Data Processing Engine ---")
+    print("--- Starting Universal Data Processing Engine (with Comprehensive Indicators) ---")
 
-    # --- Configuration ---
-    # UPDATED: Pointing to the new universal scraper's output directory
     input_dir = os.path.join("data", "universal_historical_data")
     output_base_dir = "data/universal_processed"
     nifty_list_csv = "nifty200.csv"
     
-    timeframes = {
-        'daily': 'D',
-        '2day': '2D',
-        'weekly': 'W-FRI',
-        'monthly': 'MS'
-    }
+    timeframes = {'daily': 'D', 'weekly': 'W-FRI', 'monthly': 'MS'}
 
-    # 1. Read the list of stocks and indices
     try:
         stock_list_df = pd.read_csv(nifty_list_csv)
         symbols = stock_list_df["Symbol"].tolist()
         symbols.extend(["NIFTY200_INDEX", "INDIAVIX"]) 
     except FileNotFoundError:
-        print(f"Error: '{nifty_list_csv}' not found. Please make sure the file is in the same directory.")
-        sys.exit()
+        print(f"Error: '{nifty_list_csv}' not found."); sys.exit()
 
     total_symbols = len(symbols)
     print(f"\nFound {total_symbols} symbols to process.")
 
-    # 2. Loop through each symbol
     for i, symbol_name in enumerate(symbols):
         print(f"\nProcessing {symbol_name} ({i+1}/{total_symbols})...")
         
-        # UPDATED: Using the new filename convention from the universal scraper
         input_filename = f"{symbol_name}_daily.csv"
         input_path = os.path.join(input_dir, input_filename)
 
         if not os.path.exists(input_path):
-            print(f"  > Warning: Daily data file not found for {symbol_name} at {input_path}. Skipping.")
+            print(f"  > Warning: Daily data file not found for {symbol_name}. Skipping.")
             continue
 
-        # 3. Read and prepare the daily data
         try:
             df_daily = pd.read_csv(input_path, index_col='datetime', parse_dates=True)
             df_daily = df_daily[~df_daily.index.duplicated(keep='last')]
             df_daily.sort_index(inplace=True)
-            if df_daily.empty:
-                print(f"  > Warning: Daily data file for {symbol_name} is empty. Skipping.")
-                continue
         except Exception as e:
-            print(f"  > Error reading daily data for {symbol_name}: {e}")
-            continue
+            print(f"  > Error reading daily data for {symbol_name}: {e}"); continue
 
-        # 4. Calculate indicators on the daily data first
         print("  > Calculating indicators for daily timeframe...")
         df_daily_processed = calculate_all_indicators(df_daily.copy())
         
@@ -118,27 +135,12 @@ def main():
         df_daily_processed.to_csv(output_daily_path, index_label='datetime')
         print(f"  > Saved processed daily data to {output_daily_dir}")
 
-        # 5. Resample to higher timeframes and calculate indicators
-        aggregation_rules = {
-            'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-        }
-
+        aggregation_rules = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
         for tf_name, rule in timeframes.items():
-            if tf_name == 'daily':
-                continue
-
-            print(f"  > Aggregating to {tf_name} timeframe...")
+            if tf_name == 'daily': continue
             df_htf = df_daily.resample(rule).agg(aggregation_rules).dropna()
-            
-            if df_htf.empty:
-                print(f"  > Warning: No {tf_name} data after resampling. Skipping.")
-                continue
-            
-            df_htf = df_htf[~df_htf.index.duplicated(keep='last')]
-            
-            print(f"  > Calculating indicators for {tf_name} timeframe...")
+            if df_htf.empty: continue
             df_htf_processed = calculate_all_indicators(df_htf)
-            
             output_htf_dir = os.path.join(output_base_dir, tf_name)
             os.makedirs(output_htf_dir, exist_ok=True)
             output_htf_path = os.path.join(output_htf_dir, f"{symbol_name}_{tf_name}_with_indicators.csv")
@@ -146,7 +148,6 @@ def main():
             print(f"  > Saved processed {tf_name} data to {output_htf_dir}")
 
     print("\n--- Universal Data Processing Complete! ---")
-    print(f"All processed files are located in: {output_base_dir}")
 
 if __name__ == "__main__":
     main()

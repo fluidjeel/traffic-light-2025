@@ -1,17 +1,18 @@
-# monthly_tfl_simulator.py
+# monthly_single_stock_analyzer.py
 #
 # Description:
-# A flexible version of the state-of-the-art, bias-free backtester for the
-# Monthly Pullback Strategy, capable of running on both legacy and universal
-# data pipelines. This script is based on the fully corrected v5.1 simulator.
+# A specialized backtesting tool designed to run the Monthly Pullback Strategy
+# against each stock in a universe individually. It compares the strategy's
+# performance for a single stock against a simple Buy & Hold strategy for that same stock.
 #
-# MODIFICATION (v1.2 - Final DeepSeek Audit Corrections):
-# 1. FIXED: VIX Temporal Misalignment. The intraday logic now correctly uses
-#    the VIX close from the most recent available day (T-1).
-# 2. FIXED: Position Sizing Flaw. The script now uses the real-time portfolio
-#    cash balance for every trade calculation, preventing same-day over-leveraging.
-# 3. FIXED: Data Pipeline Bug. The logic for loading the legacy intraday index
-#    file has been corrected to ensure it's always found.
+# MODIFICATION (v1.0 - Single-Stock Iteration):
+# 1. NEW SCRIPT: Created a new script based on the monthly_tfl_simulator.py.
+# 2. NEW LOGIC: The main execution loop now iterates through each symbol in the
+#    Nifty 200 list, running a full backtest for each one.
+# 3. NEW REPORTING: A consolidated summary report is generated at the end,
+#    detailing the performance of the strategy vs. buy & hold for every stock.
+# 4. FIXED: Removed dynamic trailing stop parameters and logic as requested.
+# 5. FIXED: Corrected a syntax error in the volume filter calculation.
 
 import pandas as pd
 import os
@@ -20,13 +21,16 @@ from datetime import datetime, time as dt_time, timedelta
 import sys
 import numpy as np
 
-# --- CONFIGURATION FOR THE MONTHLY TFL SIMULATOR ---
+# --- CONFIGURATION FOR THE MONTHLY SINGLE-STOCK ANALYZER ---
+# This configuration is designed for a single-stock run, so some parameters
+# like 'max_new_positions_per_day' are less critical.
 config = {
     # --- General Backtest Parameters ---
     'initial_capital': 1000000,
     'nifty_list_csv': 'nifty200.csv',
     'start_date': '2020-01-01',
     'end_date': '2025-07-16',
+    'symbol_to_backtest': None, # This will be set dynamically
 
     # --- DATA PIPELINE CONFIGURATION ---
     'data_pipeline_config': {
@@ -45,7 +49,7 @@ config = {
     'data_folder_base': '',
     'intraday_data_folder': '',
     'log_folder': 'backtest_logs',
-    'strategy_name': 'monthly_tfl_simulator',
+    'strategy_name': 'monthly_tfl_simulator_single_stock',
 
     # --- Enhanced Logging Options ---
     'log_options': { 'log_trades': True, 'log_missed': True, 'log_summary': True, 'log_filtered': True },
@@ -61,10 +65,8 @@ config = {
     
     # --- Stop-Loss Configuration ---
     'stop_loss_mode': 'PERCENT',
-    'fixed_stop_loss_percent': 0.02,
-    'atr_period_monthly': 6,
-    'atr_multiplier_stop': 1.2,
-
+    'fixed_stop_loss_percent': 0.04,
+    
     # --- Adaptive Execution Window (Sniper) ---
     'execution_window_base_days': 15,
     'execution_window_vix_extension': 7,
@@ -72,8 +74,8 @@ config = {
 
     # --- Portfolio & Risk Management ---
     'use_dynamic_position_sizing': True,
-    'risk_per_trade_percent': 1.5,
-    'max_portfolio_risk_percent': 3.0,
+    'risk_per_trade_percent': 4.0,
+    'max_portfolio_risk_percent': 6.0,
     'max_new_positions_per_day': 6,
 
     # --- Conviction Engine (Sniper Filters) ---
@@ -84,7 +86,7 @@ config = {
     'market_strength_threshold_high': -0.75,
     'base_slippage_percent': 0.10,
     'high_vol_slippage_percent': 0.20,
-    'use_market_strength_filter': True,
+    'use_market_strength_filter': False,
 
     # --- Trade Management & Profit Taking ---
     'profit_target_mode': 'RISK_BASED',
@@ -93,8 +95,8 @@ config = {
     'vix_scaled_rr_config': {
         'use_vix_scaled_rr_target': True,
         'vix_rr_scale': [
-            {'vix_max': 15, 'rr': 4.0},
-            {'vix_max': 22, 'rr': 3.5},
+            {'vix_max': 15, 'rr': 3.0},
+            {'vix_max': 22, 'rr': 2.5},
             {'vix_max': 30, 'rr': 2.0},
             {'vix_max': 999, 'rr': 1.5}
         ]
@@ -115,39 +117,51 @@ def get_consecutive_red_candles(df, current_loc, min_candles=1):
         i -= 1
     return red_candles if len(red_candles) >= min_candles else []
 
+def calculate_buy_and_hold_return(symbol, daily_data, start_date, end_date):
+    if symbol not in daily_data:
+        return 0, 0
+    
+    df = daily_data[symbol].loc[start_date:end_date]
+    if df.empty:
+        return 0, 0
+    
+    initial_price = df.iloc[0]['open']
+    final_price = df.iloc[-1]['close']
+    
+    if initial_price == 0:
+        return 0, 0
+        
+    cagr = ((final_price / initial_price) ** (1 / (len(df) / 252)) - 1) * 100
+    
+    return ((final_price - initial_price) / initial_price) * 100, cagr
+
+
 # --- MAIN SIMULATOR CLASS ---
-class MonthlyAdvancedSimulator:
+# This class is a simplified version for single-stock backtesting.
+class MonthlySingleStockSimulator:
     def __init__(self, cfg):
         self.cfg = cfg
         self.portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
         self.daily_data, self.intraday_data, self.monthly_data = {}, {}, {}
         self.target_list = {}
-        self.tradeable_symbols = []
         self.all_setups_log = []
         self.filtered_log = []
+        self.symbol_to_backtest = cfg['symbol_to_backtest']
 
     def load_data(self):
         pipeline_cfg = self.cfg['data_pipeline_config']
         if pipeline_cfg['use_universal_pipeline']:
-            print("--- Using UNIVERSAL Data Pipeline ---")
+            print(f"--- Loading UNIVERSAL Data for {self.symbol_to_backtest} ---")
             self.cfg['data_folder_base'] = pipeline_cfg['universal_processed_folder']
             self.cfg['intraday_data_folder'] = pipeline_cfg['universal_intraday_folder']
             intraday_index_filename = "{symbol}_15min.csv".format(symbol=self.cfg['market_strength_index'])
         else:
-            print("--- Using LEGACY Data Pipeline ---")
+            print(f"--- Loading LEGACY Data for {self.symbol_to_backtest} ---")
             self.cfg['data_folder_base'] = pipeline_cfg['legacy_processed_folder']
             self.cfg['intraday_data_folder'] = pipeline_cfg['legacy_intraday_folder']
-            # --- CRITICAL FIX: Correctly set the legacy filename ---
             intraday_index_filename = "NIFTY_200_15min.csv"
-            # --- END CRITICAL FIX ---
         
-        print("Loading all data into memory...")
-        try:
-            self.tradeable_symbols = pd.read_csv(self.cfg['nifty_list_csv'])['Symbol'].tolist()
-        except FileNotFoundError:
-            print(f"FATAL ERROR: Symbols file not found. Exiting."); sys.exit()
-
-        symbols_to_load = self.tradeable_symbols + [self.cfg['market_strength_index'], self.cfg['vix_symbol']]
+        symbols_to_load = [self.symbol_to_backtest, self.cfg['market_strength_index'], self.cfg['vix_symbol']]
         for symbol in symbols_to_load:
             try:
                 for tf, data_map in [('daily', self.daily_data), ('monthly', self.monthly_data)]:
@@ -170,75 +184,79 @@ class MonthlyAdvancedSimulator:
                     self.intraday_data[symbol] = df_intra
             except Exception as e:
                 print(f"Warning: Could not load all data for {symbol}. Error: {e}")
+
+        if self.symbol_to_backtest not in self.daily_data:
+            print(f"FATAL ERROR: Could not load data for {self.symbol_to_backtest}. Skipping.")
+            return False
         
-        print("Data loading complete.")
+        return True
 
     def run_simulation(self):
         if not self.daily_data or self.cfg['market_strength_index'] not in self.daily_data:
-            print("Error: Market index data not loaded."); return
+            print("Error: Market index data not loaded. Skipping simulation."); return
+        
         master_dates = self.daily_data[self.cfg['market_strength_index']].loc[self.cfg['start_date']:self.cfg['end_date']].index
         
         for date in master_dates:
-            progress_str = f"Processing {date.date()} | Equity: {self.portfolio['equity']:,.0f} | Cash: {self.portfolio['cash']:,.0f} | Positions: {len(self.portfolio['positions'])}"
-            sys.stdout.write(f"\r{progress_str.ljust(120)}"); sys.stdout.flush()
-            
             if date.is_month_end: self.scout_for_setups(date)
             self.sniper_monitor_and_execute(date)
             self.manage_eod_portfolio(date)
-        self.generate_report()
+        
+        return self.generate_report()
 
     def scout_for_setups(self, month_end_date):
-        for symbol in self.tradeable_symbols:
-            if symbol not in self.monthly_data or symbol not in self.daily_data: continue
-            df_monthly = self.monthly_data[symbol]
-            if df_monthly.empty: continue
-            try:
-                loc_monthly_indexer = df_monthly.index.get_indexer([month_end_date], method='ffill')
-                if not loc_monthly_indexer.size or loc_monthly_indexer[0] == -1: continue
-                loc_monthly = loc_monthly_indexer[0]
-                setup_candle = df_monthly.iloc[loc_monthly]
+        symbol = self.symbol_to_backtest
+        if symbol not in self.monthly_data or symbol not in self.daily_data: return
+        df_monthly = self.monthly_data[symbol]
+        if df_monthly.empty: return
+        try:
+            loc_monthly_indexer = df_monthly.index.get_indexer([month_end_date], method='ffill')
+            if not loc_monthly_indexer.size or loc_monthly_indexer[0] == -1: return
+            loc_monthly = loc_monthly_indexer[0]
+            setup_candle = df_monthly.iloc[loc_monthly]
 
-                is_green = setup_candle['close'].item() > setup_candle['open'].item()
-                
-                above_ema = True
-                if self.cfg.get('use_ema_filter', False):
-                    above_ema = setup_candle['close'].item() > setup_candle.get(f"ema_{self.cfg['ema_period_monthly']}", np.inf).item()
-                
-                volume_ok = True
-                if self.cfg.get('use_monthly_volume_filter', False):
-                    volume_ok = setup_candle['volume'].item() > (setup_candle[f"volume_{self.cfg['volume_ma_period_monthly']}_sma"].item() * self.cfg['volume_multiplier_monthly'])
+            is_green = setup_candle['close'].item() > setup_candle['open'].item()
+            above_ema = True
+            if self.cfg.get('use_ema_filter', False):
+                above_ema = setup_candle['close'].item() > setup_candle.get(f"ema_{self.cfg['ema_period_monthly']}", np.inf).item()
+            
+            volume_ok = True
+            if self.cfg.get('use_monthly_volume_filter', False):
+                volume_ok = setup_candle['volume'].item() > (setup_candle[f"volume_{self.cfg['volume_ma_period_monthly']}_sma"].item() * self.cfg['volume_multiplier_monthly'])
 
-                if not (is_green and above_ema and volume_ok): continue
-                
-                red_candles = get_consecutive_red_candles(df_monthly, loc_monthly, min_candles=1)
-                if not red_candles: continue
+            if not (is_green and above_ema and volume_ok): return
+            
+            red_candles = get_consecutive_red_candles(df_monthly, loc_monthly, min_candles=1)
+            if not red_candles: return
 
-                trigger_price = max([c['high'].item() for c in red_candles] + [setup_candle['high'].item()])
+            trigger_price = max([c['high'].item() for c in red_candles] + [setup_candle['high'].item()])
+            monthly_atr = 0
+            if self.cfg['stop_loss_mode'] == 'ATR_BASED':
                 monthly_atr = setup_candle[f"atr_{self.cfg['atr_period_monthly']}"].item()
-                if pd.isna(monthly_atr): continue
+            if pd.isna(monthly_atr): return
 
-                setup_id = f"{symbol}_{setup_candle.name.strftime('%Y-%m-%d')}"
-                self.all_setups_log.append({'setup_id': setup_id, 'status': 'IDENTIFIED'})
+            setup_id = f"{symbol}_{setup_candle.name.strftime('%Y-%m-%d')}"
+            self.all_setups_log.append({'setup_id': setup_id, 'status': 'IDENTIFIED'})
 
-                vix_df = self.daily_data[self.cfg['vix_symbol']]
-                vix_loc = vix_df.index.get_loc(month_end_date)
-                if vix_loc < 1: continue
-                vix_close_t1 = vix_df.iloc[vix_loc - 1]['close'].item()
-                
-                start_next_month = month_end_date + pd.offsets.MonthBegin(1)
-                end_next_month = month_end_date + pd.offsets.MonthEnd(1)
-                all_trading_days = self.daily_data[self.cfg['market_strength_index']].loc[start_next_month:end_next_month].index
-                
-                window_days = self.cfg['execution_window_base_days']
-                if vix_close_t1 > self.cfg['vix_high_threshold']:
-                    window_days += self.cfg['execution_window_vix_extension']
-                execution_window_days = all_trading_days[self.cfg['execution_window_skip_days']:window_days]
+            vix_df = self.daily_data[self.cfg['vix_symbol']]
+            vix_loc = vix_df.index.get_loc(month_end_date)
+            if vix_loc < 1: return
+            vix_close_t1 = vix_df.iloc[vix_loc - 1]['close'].item()
+            
+            start_next_month = month_end_date + pd.offsets.MonthBegin(1)
+            end_next_month = month_end_date + pd.offsets.MonthEnd(1)
+            all_trading_days = self.daily_data[self.cfg['market_strength_index']].loc[start_next_month:end_next_month].index
+            
+            window_days = self.cfg['execution_window_base_days']
+            if vix_close_t1 > self.cfg['vix_high_threshold']:
+                window_days += self.cfg['execution_window_vix_extension']
+            execution_window_days = all_trading_days[self.cfg['execution_window_skip_days']:window_days]
 
-                for day in execution_window_days:
-                    day_str = day.strftime('%Y-%m-%d')
-                    if day_str not in self.target_list: self.target_list[day_str] = {}
-                    self.target_list[day_str][symbol] = {'trigger_price': trigger_price, 'monthly_atr': monthly_atr, 'setup_id': setup_id}
-            except Exception: continue
+            for day in execution_window_days:
+                day_str = day.strftime('%Y-%m-%d')
+                if day_str not in self.target_list: self.target_list[day_str] = {}
+                self.target_list[day_str][symbol] = {'trigger_price': trigger_price, 'monthly_atr': monthly_atr, 'setup_id': setup_id}
+        except Exception: return
 
     def sniper_monitor_and_execute(self, date):
         date_str = date.strftime('%Y-%m-%d')
@@ -246,12 +264,10 @@ class MonthlyAdvancedSimulator:
         if not todays_watchlist: return
 
         try:
-            # --- CRITICAL FIX: Use VIX from T-1 (most recent historical) ---
             vix_df = self.daily_data[self.cfg['vix_symbol']]
             vix_loc = vix_df.index.get_loc(date)
             if vix_loc < 1: return
             vix_close_t1 = vix_df.iloc[vix_loc - 1]['close'].item()
-            # --- END CRITICAL FIX ---
             
             mkt_idx_intra = self.intraday_data[self.cfg['market_strength_index']].loc[date_str]
             mkt_open = mkt_idx_intra.iloc[0]['open'].item()
@@ -300,10 +316,6 @@ class MonthlyAdvancedSimulator:
         risk_per_share_actual = entry_price - stop_loss_actual
         if pd.isna(risk_per_share_actual) or risk_per_share_actual <= 0: return
 
-        risk_per_share_for_target = risk_per_share_actual
-        if self.cfg['profit_target_mode'] == 'ATR_BASED':
-            risk_per_share_for_target = details['monthly_atr'] * self.cfg['atr_multiplier_stop']
-
         rr_config = self.cfg.get('vix_scaled_rr_config', {})
         if rr_config.get('use_vix_scaled_rr_target', False):
             scale = rr_config.get('vix_rr_scale', [])
@@ -315,9 +327,8 @@ class MonthlyAdvancedSimulator:
         else:
             profit_target_rr = self.cfg['profit_target_rr_calm'] if vix_close <= self.cfg['vix_high_threshold'] else self.cfg['profit_target_rr_high']
 
-        target_price = entry_price + (risk_per_share_for_target * profit_target_rr)
+        target_price = entry_price + (risk_per_share_actual * profit_target_rr)
         
-        # --- CRITICAL FIX: Use real-time cash for all risk calculations ---
         current_cash = self.portfolio['cash']
         capital_to_risk = current_cash * (self.cfg['risk_per_trade_percent'] / 100)
         if self.cfg['use_dynamic_position_sizing']:
@@ -325,7 +336,6 @@ class MonthlyAdvancedSimulator:
             max_portfolio_risk_capital = current_cash * (self.cfg['max_portfolio_risk_percent'] / 100)
             available_risk_capital = max(0, max_portfolio_risk_capital - active_risk)
             capital_to_risk = min(capital_to_risk, available_risk_capital)
-        # --- END CRITICAL FIX ---
         
         shares = math.floor(capital_to_risk / risk_per_share_actual) if capital_to_risk > 0 else 0
 
@@ -339,10 +349,10 @@ class MonthlyAdvancedSimulator:
                 'stop_loss': stop_loss_actual, 'shares': shares, 'target': target_price,
                 'initial_shares': shares, 'setup_id': details['setup_id'],
                 'lowest_price_since_entry': entry_price,
+                'vix_close': vix_close,
             }
             if self.cfg['excursion_logging']['enable_mfe_tracking']:
                 position_data['highest_price_since_entry'] = entry_price
-                position_data['vix_close'] = vix_close
 
             self.portfolio['positions'][f"{symbol}_{candle_time}"] = position_data
         elif shares > 0:
@@ -415,12 +425,15 @@ class MonthlyAdvancedSimulator:
             if date in self.daily_data.get(pos['symbol'], pd.DataFrame()).index:
                 daily_candle = self.daily_data[pos['symbol']].loc[date]
                 new_stop = pos['stop_loss']
+                
                 if daily_candle['close'].item() > pos['entry_price']:
                     if self.cfg['use_aggressive_breakeven'] and not pos.get('partial_exit', False):
                         buffer = pos['entry_price'] * self.cfg['breakeven_buffer_percent']
                         new_stop = max(new_stop, pos['entry_price'] + buffer)
+                    
                     if daily_candle['close'].item() > daily_candle['open'].item():
                         new_stop = max(new_stop, daily_candle['low'].item())
+                        
                 pos['stop_loss'] = new_stop
         
         eod_value_of_positions = sum([p['shares'] * self.daily_data[p['symbol']].loc[date]['close'].item() for p in self.portfolio['positions'].values() if date in self.daily_data.get(p['symbol'], pd.DataFrame()).index])
@@ -428,9 +441,9 @@ class MonthlyAdvancedSimulator:
         self.portfolio['daily_values'].append({'date': date, 'equity': self.portfolio['equity']})
 
     def generate_report(self):
-        print("\n\n--- MONTHLY SIMULATOR BACKTEST COMPLETE ---")
         final_equity = self.portfolio['equity']
         equity_df = pd.DataFrame(self.portfolio['daily_values']).set_index('date')
+        
         cagr, max_drawdown = 0, 0
         if not equity_df.empty:
             years = (equity_df.index[-1] - equity_df.index[0]).days / 365.25
@@ -438,6 +451,7 @@ class MonthlyAdvancedSimulator:
             peak = equity_df['equity'].cummax()
             drawdown = (equity_df['equity'] - peak) / peak
             max_drawdown = abs(drawdown.min()) * 100
+        
         trades_df = pd.DataFrame(self.portfolio['trades'])
         total_trades, win_rate, profit_factor = 0, 0, 0
         if not trades_df.empty:
@@ -448,46 +462,63 @@ class MonthlyAdvancedSimulator:
             gross_loss = abs(trades_df[trades_df['pnl'] <= 0]['pnl'].sum())
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
         
-        summary_content = f"""Final Equity: {final_equity:,.2f}, CAGR: {cagr:.2f}%, Max Drawdown: {max_drawdown:.2f}%, Profit Factor: {profit_factor:.2f}%, Win Rate: {win_rate:.2f}%, Total Trades: {total_trades}"""
-        print(summary_content)
+        summary = {
+            'Symbol': self.symbol_to_backtest,
+            'Final Equity': final_equity,
+            'CAGR': cagr,
+            'Max Drawdown': max_drawdown,
+            'Profit Factor': profit_factor,
+            'Win Rate': win_rate,
+            'Total Trades': total_trades,
+            'Initial Capital': self.cfg['initial_capital']
+        }
+        return summary
 
-        log_opts = self.cfg.get('log_options', {})
-        strategy_log_folder = os.path.join(self.cfg['log_folder'], self.cfg['strategy_name'])
-        os.makedirs(strategy_log_folder, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if log_opts.get('log_summary', True):
-            params_str = "INPUT PARAMETERS:\n-----------------\n"
-            for key, value in self.cfg.items():
-                if isinstance(value, dict):
-                    params_str += f"{key.replace('_', ' ').title()}:\n"
-                    for k, v in value.items(): params_str += f"  - {k}: {v}\n"
-                else: params_str += f"{key.replace('_', ' ').title()}: {value}\n"
-            enhanced_summary_content = f"BACKTEST SUMMARY REPORT ({self.cfg['strategy_name'].upper()})\n===================================================================\n{params_str}\n{summary_content}"
-            summary_filename = os.path.join(strategy_log_folder, f"{timestamp}_summary.txt")
-            with open(summary_filename, 'w') as f: f.write(enhanced_summary_content)
-            print(f"Enhanced summary report saved to '{summary_filename}'")
-        
-        if log_opts.get('log_trades', True) and not trades_df.empty:
-            trades_filename = os.path.join(strategy_log_folder, f"{timestamp}_trade_details.csv")
-            trades_df.to_csv(trades_filename, index=False)
-            print(f"Trade details saved to '{trades_filename}'")
-
-        if log_opts.get('log_missed', True) and self.all_setups_log:
-            all_setups_df = pd.DataFrame(self.all_setups_log)
-            missed_trades_df = all_setups_df[all_setups_df['status'].isin(['MISSED_CAPITAL', 'FILTERED_RISK'])].copy()
-            if not missed_trades_df.empty:
-                missed_filename = os.path.join(strategy_log_folder, f"{timestamp}_missed_trades.csv")
-                missed_trades_df.to_csv(missed_filename, index=False)
-                print(f"Missed trades log saved to '{missed_filename}'")
-        
-        if log_opts.get('log_filtered', True) and self.filtered_log:
-            filtered_df = pd.DataFrame(self.filtered_log)
-            filtered_filename = os.path.join(strategy_log_folder, f"{timestamp}_filtered.csv")
-            filtered_df.to_csv(filtered_filename, index=False)
-            print(f"Filtered setups log saved to '{filtered_filename}'")
-
-
+# --- Main execution loop for all symbols ---
 if __name__ == '__main__':
-    simulator = MonthlyAdvancedSimulator(config)
-    simulator.load_data()
-    simulator.run_simulation()
+    nifty_list_path = config['nifty_list_csv']
+    try:
+        nifty_symbols = pd.read_csv(nifty_list_path)['Symbol'].tolist()
+    except FileNotFoundError:
+        print(f"FATAL ERROR: Symbols file not found at '{nifty_list_path}'. Exiting."); sys.exit()
+
+    all_results = []
+    
+    print("Starting individual stock backtests...")
+    for symbol in nifty_symbols:
+        print(f"\n--- Running backtest for {symbol} ---")
+        config['symbol_to_backtest'] = symbol
+        simulator = MonthlySingleStockSimulator(config)
+        
+        if simulator.load_data():
+            result = simulator.run_simulation()
+            all_results.append(result)
+
+    final_results_df = pd.DataFrame(all_results)
+    
+    # Calculate Buy & Hold returns for comparison
+    master_simulator = MonthlySingleStockSimulator(config)
+    master_simulator.load_data() # Loads index and VIX data for buy and hold calculation
+    buy_and_hold_results = {}
+    for symbol in nifty_symbols:
+        bh_return, bh_cagr = calculate_buy_and_hold_return(
+            symbol, 
+            master_simulator.daily_data, 
+            config['start_date'], 
+            config['end_date']
+        )
+        buy_and_hold_results[symbol] = {'bh_return': bh_return, 'bh_cagr': bh_cagr}
+
+    final_results_df['BH Return %'] = final_results_df['Symbol'].map(lambda x: buy_and_hold_results.get(x, {}).get('bh_return', 0))
+    final_results_df['BH CAGR %'] = final_results_df['Symbol'].map(lambda x: buy_and_hold_results.get(x, {}).get('bh_cagr', 0))
+    final_results_df['Strategy vs. BH (%)'] = final_results_df['CAGR'] - final_results_df['BH CAGR %']
+    
+    # Save the consolidated report
+    log_folder = os.path.join('backtest_logs', 'single_stock_analysis')
+    os.makedirs(log_folder, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_filename = os.path.join(log_folder, f"{timestamp}_single_stock_report.csv")
+    final_results_df.to_csv(report_filename, index=False)
+    
+    print(f"\n\n--- CONSOLIDATED REPORT SAVED TO '{report_filename}' ---")
+    print(final_results_df.to_string())

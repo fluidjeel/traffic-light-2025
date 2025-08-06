@@ -59,14 +59,14 @@ config = {
 
     # --- Stop-Loss Configuration ---
     'stop_loss_mode': 'LOOKBACK',
-    'fixed_stop_loss_percent': 0.09,
-    'stop_loss_lookback_days': 5,
+    'fixed_stop_loss_percent': 0.03,
+    'stop_loss_lookback_days': 3,
 
     # --- Trade Management & Profit Taking ---
     'use_partial_profit_leg': False,
-    'use_aggressive_breakeven': True,
+    'use_aggressive_breakeven': False,
     'breakeven_buffer_percent': 0.0005,
-    'profit_target_multiplier': 1.2,
+    'profit_target_multiplier': 2.0,
 
     # --- EOD Filters (For Watchlist Generation) ---
     'market_regime_filter': True,
@@ -75,7 +75,7 @@ config = {
     'volume_filter': True,
     'volume_ma_period': 20,
     'volume_multiplier': 1.3,
-    'rs_filter': True,
+    'rs_filter': False,
 
     # --- Conviction Engine (Intraday Sniper Filters) ---
     'use_dynamic_position_sizing': True,
@@ -94,7 +94,7 @@ config = {
     'volume_acceleration_factor': 1.2,
     'volume_projection_thresholds': { dt_time(10, 0): 0.20, dt_time(11, 30): 0.45, dt_time(13, 0): 0.65, dt_time(14, 0): 0.85 },
 
-    'use_enhanced_market_strength': True,
+    'use_enhanced_market_strength': False,
     'market_strength_threshold': -0.15,
     'vix_symbol': 'INDIAVIX',
 }
