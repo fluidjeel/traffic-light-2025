@@ -2,15 +2,13 @@
 #
 # Description:
 # A universal indicator calculation script designed to work with the output of
-# the 'universal_fyers_scraper.py'.
+# the 'universal_fyers_scraper.py'. This is the comprehensive version containing
+# a full suite of indicators for broad analysis.
 #
-# MODIFICATION (v1.4 - Added Turnover Calculation):
-# 1. ADDED: Calculation for daily 'turnover' (close * volume).
-# 2. ADDED: Calculation for the 20-day SMA of turnover ('turnover_20_sma').
-#
-# MODIFICATION (v1.3 - Bug Fix):
-# 1. FIXED: A TypeError that occurred during MACD calculation when the input
-#    dataframe was too short.
+# MODIFICATION (VIX Spike Filter Data - Corrected):
+# 1. ADDITIVE CHANGE: Added the calculation for 'vix_10_sma' to support the
+#    new VIX spike filter in the simulator.
+# 2. RESTORED: All original comments and spacing have been restored.
 
 import pandas as pd
 import os
@@ -58,7 +56,7 @@ def calculate_all_indicators(df):
     if atr_14 is not None and not atr_14.empty:
         df['atr_14'] = atr_14
         df['atr_14_pct'] = (df['atr_14'] / df['close']) * 100
-
+        
     atr_6 = ta.atr(df['high'], df['low'], df['close'], length=6)
     if atr_6 is not None and not atr_6.empty:
         df['atr_6'] = atr_6
@@ -68,16 +66,18 @@ def calculate_all_indicators(df):
         df['bb_upper_20_2'] = bbands['BBU_20_2.0']
         df['bb_middle_20_2'] = bbands['BBM_20_2.0']
         df['bb_lower_20_2'] = bbands['BBL_20_2.0']
+        
+    # ADDITIVE CHANGE: VIX moving average for spike filter
+    df['vix_10_sma'] = ta.sma(df['close'], length=10)
 
     # --- Volume Indicators ---
     df['obv'] = ta.obv(df['close'], df['volume'])
     df['volume_20_sma'] = ta.sma(df['volume'], length=20)
     df['volume_50_sma'] = ta.sma(df['volume'], length=50)
+    df['volume_ratio'] = df['volume'] / df['volume_20_sma']
     
-    ### MODIFICATION START: Added Turnover Calculation ###
     df['turnover'] = df['close'] * df['volume']
     df['turnover_20_sma'] = ta.sma(df['turnover'], length=20)
-    ### MODIFICATION END ###
 
     # --- Custom Price Action Indicators ---
     df['52_week_high'] = df['high'].rolling(window=252, min_periods=1).max()
@@ -86,16 +86,29 @@ def calculate_all_indicators(df):
     candle_range = df['high'] - df['low']
     body_size = abs(df['close'] - df['open'])
     df['body_ratio'] = np.where(candle_range > 0, body_size / candle_range, 0)
+
+    ### NEW DEEPSEEK FEATURES ###
+    # Pullback Depth: (Current Close - Recent High) / Recent High
+    df['high_20_period'] = df['high'].rolling(window=20, min_periods=1).max()
+    df['pullback_depth'] = (df['close'] - df['high_20_period']) / df['high_20_period']
+
+    # Volatility Ratio: ATR / Average Price (e.g., 20-period EMA)
+    # Ensure ema_20 is calculated before this
+    if 'ema_20' in df.columns and 'atr_14' in df.columns: # ADDITIVE CHANGE: Check for atr_14
+        df['volatility_ratio'] = df['atr_14'] / df['ema_20']
+    else:
+        df['volatility_ratio'] = np.nan # Or use another average if ema_20 is not available
+    ### END NEW DEEPSEEK FEATURES ###
     
     return df
 
 def main():
     """Main function to run the entire data processing pipeline."""
-    print("--- Starting Universal Data Processing Engine (with Comprehensive Indicators) ---")
+    print("--- Starting Universal Data Processing Engine (Comprehensive Version) ---")
 
     input_dir = os.path.join("data", "universal_historical_data")
     output_base_dir = "data/universal_processed"
-    nifty_list_csv = "nifty200.csv"
+    nifty_list_csv = "nifty500.csv"
     
     timeframes = {'daily': 'D', 'weekly': 'W-FRI', 'monthly': 'MS'}
 

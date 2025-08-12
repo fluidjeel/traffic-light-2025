@@ -45,7 +45,7 @@ except ImportError:
 # --- SCRIPT-SPECIFIC SETTINGS ---
 SCRIPT_CONFIG = {
     "output_dir": os.path.join("data", "universal_historical_data"),
-    "nifty_list_csv": "nifty200.csv",
+    "nifty_list_csv": "miss.csv",
     "index_list": ["NIFTY200_INDEX", "INDIAVIX"],
     "default_start_date": "2018-01-01",
     "token_file": "fyers_access_token.txt",
