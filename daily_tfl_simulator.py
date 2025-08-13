@@ -25,7 +25,7 @@ import numpy as np
 config = {
     # --- General Backtest Parameters ---
     'initial_capital': 1000000,
-    'start_date': '2018-01-01',
+    'start_date': '2023-01-01',
     'end_date': '2025-07-15',
     'nifty_list_csv': 'nifty500.csv',
 

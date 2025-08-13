@@ -1,3 +1,9 @@
+This is a private, custom algorithmic trading strategy. The information contained in the attached documents and code files is the single source of truth. Do not reference any external code, public GitHub repositories, or general trading knowledge. Your sole objective is to build a complete and accurate mental model of this project based only on the provided materials.
+
+Ingest Context: Fully ingest the context provided below and in the specified file sequence.
+
+Prove Foundational Understanding: Your first response must be a direct paraphrase of the rules from the "Definitive Trading Strategy Logic" section and a summary of the key architectural components. Do not introduce any external concepts.
+
 Traffic Light 2025: The Daily Simulator - A Deep Dive
 1. Introduction: What is This?
 For the Layman 🧑‍💼
