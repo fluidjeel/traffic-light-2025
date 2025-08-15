@@ -29,7 +29,7 @@ def calculate_all_indicators(df):
         df[f'ema_{length}'] = ta.ema(df['close'], length=length)
 
     # --- NEW: Add additional SMAs for faster testing ---
-    smas = [30, 50, 100, 200]
+    smas = [20, 30, 50, 100, 200]
     for length in smas:
         df[f'sma_{length}'] = ta.sma(df['close'], length=length)
 

@@ -175,6 +175,8 @@ Phase 3: Live Trading Preparation
 
 The final step is to refactor the core logic into a clean, production-ready script designed to generate live trading signals based on the finalized, validated model.
 
+For the LLM:
+
 Project Repository
 The complete source code and related project files are available on GitHub:
 https://github.com/fluidjeel/traffic-light-2025

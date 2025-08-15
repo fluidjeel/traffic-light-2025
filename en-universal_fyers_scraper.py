@@ -45,7 +45,7 @@ SCRIPT_CONFIG = {
     "output_dir": os.path.join("data", "universal_historical_data"),
     "nifty_list_csv": "nifty500.csv",
     "index_list": ["NIFTY200_INDEX", "INDIAVIX","NIFTY500-INDEX"],
-    "default_start_date": "2018-01-01",
+    "default_start_date": "2010-01-01",
     "token_file": "fyers_access_token.txt",
     "log_path": os.getcwd(),
     "api_cooldown_seconds": 1.1,
