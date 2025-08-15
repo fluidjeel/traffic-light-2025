@@ -35,7 +35,7 @@ config = {
         'enabled': True,
         'index_symbol': 'NIFTY500-INDEX',
         'slow_ma_period': 50,
-        'fast_ma_period': 20,
+        'fast_ma_period': 30,
     },
 
     # --- NEW: Adaptive Parameters based on Market Regime ---
