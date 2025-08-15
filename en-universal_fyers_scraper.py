@@ -7,13 +7,9 @@
 # longer cooldown for throttling errors. It also allows for explicit
 # control over the number of parallel processes.
 #
-# MODIFICATION (v1.8 - API Throttling Fix):
-# - Added a new configuration setting `parallel_processes` to manually throttle
-#   downloads and prevent rate-limiting.
-# - The `get_historical_data` function now specifically checks for "request limit reached"
-#   and handles it with a longer, dedicated cooldown before retrying.
-# - The `process_single_symbol` function now checks for a new 'THROTTLED' status.
-# - The final report includes a breakdown of invalid and throttled symbols.
+# MODIFICATION (v1.9 - Index Only Flag):
+# - Added a new '--only-index' command-line argument to allow scraping
+#   data exclusively for the indices defined in the config.
 
 import os
 import sys
@@ -48,19 +44,20 @@ except ImportError:
 SCRIPT_CONFIG = {
     "output_dir": os.path.join("data", "universal_historical_data"),
     "nifty_list_csv": "nifty500.csv",
-    "index_list": ["NIFTY200_INDEX", "INDIAVIX"],
+    "index_list": ["NIFTY200_INDEX", "INDIAVIX","NIFTY500-INDEX"],
     "default_start_date": "2018-01-01",
     "token_file": "fyers_access_token.txt",
     "log_path": os.getcwd(),
     "api_cooldown_seconds": 1.1,
     "api_retries": 3,
-    "parallel_processes": 4 # New setting to control concurrent downloads
+    "parallel_processes": 4 
 }
 
 # --- SYMBOL MAPPING FOR INDICES ---
 FYERS_INDEX_SYMBOLS = {
     "NIFTY200_INDEX": "NSE:NIFTY200-INDEX",
-    "INDIAVIX": "NSE:INDIAVIX-INDEX"
+    "INDIAVIX": "NSE:INDIAVIX-INDEX",
+    "NIFTY500-INDEX": "NSE:NIFTY500-INDEX"
 }
 
 # --- GLOBAL VARIABLES FOR MULTIPROCESSING ---
@@ -150,16 +147,14 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
         try:
             response = fyers_client.history(data=data)
             
-            # Check for specific known errors
             if response.get("message") == "Invalid symbol provided":
                 print(f"    - Worker {current_process().pid} ERROR: Invalid symbol {symbol}. Skipping retries.")
                 return INVALID_SYMBOL_ERROR
             
             if response.get("message") == "request limit reached":
-                # Handle throttling with a longer cooldown before retrying
                 print(f"    - Worker {current_process().pid} ERROR: API request limit reached for {symbol}. Retrying in 10 seconds...")
-                time.sleep(10) # Dedicated cooldown for this specific error
-                continue # Retry the request
+                time.sleep(10) 
+                continue 
             
             if response.get("s") == 'ok':
                 candles = response.get('candles', [])
@@ -176,7 +171,6 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
         except Exception as e:
             print(f"    - Worker {current_process().pid} An exception occurred for {symbol} (Attempt {i+1}): {e}")
         
-        # Exponential backoff for general errors
         if i < SCRIPT_CONFIG["api_retries"] - 1:
             time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"] * (2**i))
 
@@ -271,43 +265,6 @@ def process_single_symbol(symbol_name):
         new_data_df.to_csv(output_path, mode='a', header=False)
         print(f"    - Worker {current_process().pid} Success: Appended {len(new_data_df)} new records for {symbol_name} to {output_path}")
 
-def get_access_token():
-    """
-    Handles the Fyers authentication flow to get the access token.
-    """
-    if os.path.exists(SCRIPT_CONFIG["token_file"]):
-        with open(SCRIPT_CONFIG["token_file"], 'r') as f:
-            return f.read().strip()
-
-    session = fyersModel.SessionModel(
-        client_id=config.CLIENT_ID,
-        secret_key=config.SECRET_KEY,
-        redirect_uri=config.REDIRECT_URI,
-        response_type='code',
-        grant_type='authorization_code'
-    )
-    
-    auth_url = session.generate_authcode()
-    print("--- Fyers Login Required ---")
-    print(f"1. Go to this URL and log in: {auth_url}")
-    print("2. After logging in, you will be redirected to a blank page.")
-    print("3. Copy the 'auth_code' from the redirected URL's address bar.")
-    
-    auth_code = input("4. Enter the auth_code here: ")
-
-    session.set_token(auth_code)
-    response = session.generate_token()
-
-    if response.get("access_token"):
-        access_token = response["access_token"]
-        with open(SCRIPT_CONFIG["token_file"], 'w') as f:
-            f.write(access_token)
-        print("Access token generated and saved successfully.")
-        return access_token
-    else:
-        print(f"Failed to generate access token: {response}")
-        return None
-
 def main():
     """
     Main function to orchestrate the scraping process, now using multiprocessing.
@@ -315,6 +272,8 @@ def main():
     parser = argparse.ArgumentParser(description="Universal Fyers Scraper for Nifty 200 Project.")
     parser.add_argument('--interval', type=str, required=False, choices=['daily', '15min'], help='Specify an interval to scrape. If not provided, all intervals will be scraped.')
     parser.add_argument('--force', action='store_true', help='Force a full re-download of data, ignoring existing files.')
+    # --- CHANGED LINE ---
+    parser.add_argument('--only-index', action='store_true', help='Scrape data only for the indices defined in the config.')
     args = parser.parse_args()
 
     access_token = get_access_token()
@@ -326,7 +285,11 @@ def main():
     print(f"Output directory set to: '{SCRIPT_CONFIG['output_dir']}'")
     
     equity_symbols = []
-    if SCRIPT_CONFIG["nifty_list_csv"]:
+    # --- CHANGED BLOCK START ---
+    if args.only_index:
+        print("\n--only-index flag detected. Scraping only index symbols.--")
+    elif SCRIPT_CONFIG["nifty_list_csv"]:
+    # --- CHANGED BLOCK END ---
         try:
             equity_symbols = pd.read_csv(SCRIPT_CONFIG["nifty_list_csv"])["Symbol"].tolist()
         except FileNotFoundError:

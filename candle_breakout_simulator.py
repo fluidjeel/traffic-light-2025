@@ -37,21 +37,21 @@ config = {
 
     # --- Entry Filters ---
     'entry_filters': {
-        'use_ema_filter': True,
+        'use_ema_filter': False,
         'ema_period': 10,
         
         'use_ema_distance_filter': True,
         'min_long_ema_dist_pct': 0.0,
-        'max_long_ema_dist_pct': 20.0,
+        'max_long_ema_dist_pct': 100.0,
         'min_short_ema_dist_pct': -5.0,
         'max_short_ema_dist_pct': -1.0,
 
         'use_volume_filter': True,
         'min_volume_ratio': 1.25,
 
-        'use_rsi_filter': True,
-        'min_rsi': 30.0,
-        'max_rsi': 70.0,
+        'use_rsi_filter': False,
+        'min_rsi': 70.0,
+        'max_rsi': 100.0,
         
         'preceding_candle_long': 'any',
         'preceding_candle_short': 'any',
@@ -68,7 +68,7 @@ config = {
         'use_breakeven': True,
         'use_aggressive': False,
         'atr_period': 14,
-        'atr_multiplier': 2.0,
+        'atr_multiplier': 8.0,
         'breakeven_buffer_percent': 0.1,
     },
 

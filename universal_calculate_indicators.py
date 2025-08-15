@@ -5,16 +5,18 @@
 # the 'universal_fyers_scraper.py'. This is the comprehensive version containing
 # a full suite of indicators for broad analysis.
 #
-# MODIFICATION (VIX Spike Filter Data - Corrected):
-# 1. ADDITIVE CHANGE: Added the calculation for 'vix_10_sma' to support the
-#    new VIX spike filter in the simulator.
-# 2. RESTORED: All original comments and spacing have been restored.
+# MODIFICATION (v4 - Additional SMAs):
+# - The script has been parallelized using Python's multiprocessing library.
+# - Added a new '--only-index' command-line argument.
+# - Added calculation for 30, 50, and 100-day SMAs for future analysis.
 
 import pandas as pd
 import os
 import sys
 import pandas_ta as ta
 import numpy as np
+from multiprocessing import Pool, cpu_count
+import argparse
 
 def calculate_all_indicators(df):
     """Calculates all required technical indicators on a given dataframe."""
@@ -25,6 +27,11 @@ def calculate_all_indicators(df):
     emas = [8, 10, 20, 30, 50, 100, 200]
     for length in emas:
         df[f'ema_{length}'] = ta.ema(df['close'], length=length)
+
+    # --- NEW: Add additional SMAs for faster testing ---
+    smas = [30, 50, 100, 200]
+    for length in smas:
+        df[f'sma_{length}'] = ta.sma(df['close'], length=length)
 
     # --- Momentum Indicators ---
     df['rsi_14'] = ta.rsi(df['close'], length=14)
@@ -67,7 +74,6 @@ def calculate_all_indicators(df):
         df['bb_middle_20_2'] = bbands['BBM_20_2.0']
         df['bb_lower_20_2'] = bbands['BBL_20_2.0']
         
-    # ADDITIVE CHANGE: VIX moving average for spike filter
     df['vix_10_sma'] = ta.sma(df['close'], length=10)
 
     # --- Volume Indicators ---
@@ -87,78 +93,116 @@ def calculate_all_indicators(df):
     body_size = abs(df['close'] - df['open'])
     df['body_ratio'] = np.where(candle_range > 0, body_size / candle_range, 0)
 
-    ### NEW DEEPSEEK FEATURES ###
-    # Pullback Depth: (Current Close - Recent High) / Recent High
     df['high_20_period'] = df['high'].rolling(window=20, min_periods=1).max()
     df['pullback_depth'] = (df['close'] - df['high_20_period']) / df['high_20_period']
 
-    # Volatility Ratio: ATR / Average Price (e.g., 20-period EMA)
-    # Ensure ema_20 is calculated before this
-    if 'ema_20' in df.columns and 'atr_14' in df.columns: # ADDITIVE CHANGE: Check for atr_14
+    if 'ema_20' in df.columns and 'atr_14' in df.columns:
         df['volatility_ratio'] = df['atr_14'] / df['ema_20']
     else:
-        df['volatility_ratio'] = np.nan # Or use another average if ema_20 is not available
-    ### END NEW DEEPSEEK FEATURES ###
+        df['volatility_ratio'] = np.nan
     
     return df
 
-def main():
-    """Main function to run the entire data processing pipeline."""
-    print("--- Starting Universal Data Processing Engine (Comprehensive Version) ---")
-
+def process_symbol(symbol_name):
+    """
+    Processes all timeframes for a single symbol. This function is called by each
+    parallel worker.
+    """
+    print(f"Processing {symbol_name}...")
+    
     input_dir = os.path.join("data", "universal_historical_data")
     output_base_dir = "data/universal_processed"
-    nifty_list_csv = "nifty500.csv"
-    
     timeframes = {'daily': 'D', 'weekly': 'W-FRI', 'monthly': 'MS'}
 
-    try:
-        stock_list_df = pd.read_csv(nifty_list_csv)
-        symbols = stock_list_df["Symbol"].tolist()
-        symbols.extend(["NIFTY200_INDEX", "INDIAVIX"]) 
-    except FileNotFoundError:
-        print(f"Error: '{nifty_list_csv}' not found."); sys.exit()
+    # --- Daily Processing ---
+    input_filename_daily = f"{symbol_name}_daily.csv"
+    input_path_daily = os.path.join(input_dir, input_filename_daily)
 
-    total_symbols = len(symbols)
+    if not os.path.exists(input_path_daily):
+        print(f"  > Warning: Daily data file not found for {symbol_name}. Skipping.")
+        return
+    
+    try:
+        df_daily = pd.read_csv(input_path_daily, index_col='datetime', parse_dates=True)
+        df_daily = df_daily[~df_daily.index.duplicated(keep='last')]
+        df_daily.sort_index(inplace=True)
+    except Exception as e:
+        print(f"  > Error reading daily data for {symbol_name}: {e}")
+        return
+
+    df_daily_processed = calculate_all_indicators(df_daily.copy())
+    
+    output_daily_dir = os.path.join(output_base_dir, 'daily')
+    os.makedirs(output_daily_dir, exist_ok=True)
+    output_daily_path = os.path.join(output_daily_dir, f"{symbol_name}_daily_with_indicators.csv")
+    df_daily_processed.to_csv(output_daily_path, index_label='datetime')
+
+    # --- Higher Timeframe Processing ---
+    aggregation_rules = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+    for tf_name, rule in timeframes.items():
+        if tf_name == 'daily': continue
+        df_htf = df_daily.resample(rule).agg(aggregation_rules).dropna()
+        if df_htf.empty: continue
+        df_htf_processed = calculate_all_indicators(df_htf)
+        output_htf_dir = os.path.join(output_base_dir, tf_name)
+        os.makedirs(output_htf_dir, exist_ok=True)
+        output_htf_path = os.path.join(output_htf_dir, f"{symbol_name}_{tf_name}_with_indicators.csv")
+        df_htf_processed.to_csv(output_htf_path, index_label='datetime')
+
+    # --- 15-Minute Processing ---
+    input_filename_15min = f"{symbol_name}_15min.csv"
+    input_path_15min = os.path.join(input_dir, input_filename_15min)
+    
+    if os.path.exists(input_path_15min):
+        try:
+            df_15min = pd.read_csv(input_path_15min, index_col='datetime', parse_dates=True)
+            df_15min = df_15min[~df_15min.index.duplicated(keep='last')]
+            df_15min.sort_index(inplace=True)
+            df_15min_processed = calculate_all_indicators(df_15min.copy())
+            
+            output_15min_dir = os.path.join(output_base_dir, '15min')
+            os.makedirs(output_15min_dir, exist_ok=True)
+            output_15min_path = os.path.join(output_15min_dir, f"{symbol_name}_15min_with_indicators.csv")
+            df_15min_processed.to_csv(output_15min_path, index_label='datetime')
+        except Exception as e:
+            print(f"  > Error reading 15-minute data for {symbol_name}: {e}")
+    
+    print(f"Finished processing {symbol_name}.")
+
+
+def main():
+    """Main function to run the entire data processing pipeline in parallel."""
+    parser = argparse.ArgumentParser(description="Universal Indicator Calculator")
+    parser.add_argument('--only-index', action='store_true', help='Calculate indicators only for the indices.')
+    args = parser.parse_args()
+
+    print("--- Starting Universal Data Processing Engine (Parallel Version) ---")
+
+    nifty_list_csv = "nifty500.csv"
+    
+    symbols_to_process = []
+    
+    if not args.only_index:
+        try:
+            stock_list_df = pd.read_csv(nifty_list_csv)
+            symbols_to_process.extend(stock_list_df["Symbol"].tolist())
+        except FileNotFoundError:
+            print(f"Warning: '{nifty_list_csv}' not found. Processing indices only.")
+    else:
+        print("\n--only-index flag detected. Calculating indicators only for index symbols.--")
+
+    symbols_to_process.extend(["NIFTY200_INDEX", "INDIAVIX", "NIFTY500-INDEX"])
+    
+    symbols_to_process = sorted(list(set(symbols_to_process)))
+
+    total_symbols = len(symbols_to_process)
     print(f"\nFound {total_symbols} symbols to process.")
 
-    for i, symbol_name in enumerate(symbols):
-        print(f"\nProcessing {symbol_name} ({i+1}/{total_symbols})...")
-        
-        input_filename = f"{symbol_name}_daily.csv"
-        input_path = os.path.join(input_dir, input_filename)
-
-        if not os.path.exists(input_path):
-            print(f"  > Warning: Daily data file not found for {symbol_name}. Skipping.")
-            continue
-
-        try:
-            df_daily = pd.read_csv(input_path, index_col='datetime', parse_dates=True)
-            df_daily = df_daily[~df_daily.index.duplicated(keep='last')]
-            df_daily.sort_index(inplace=True)
-        except Exception as e:
-            print(f"  > Error reading daily data for {symbol_name}: {e}"); continue
-
-        print("  > Calculating indicators for daily timeframe...")
-        df_daily_processed = calculate_all_indicators(df_daily.copy())
-        
-        output_daily_dir = os.path.join(output_base_dir, 'daily')
-        os.makedirs(output_daily_dir, exist_ok=True)
-        output_daily_path = os.path.join(output_daily_dir, f"{symbol_name}_daily_with_indicators.csv")
-        df_daily_processed.to_csv(output_daily_path, index_label='datetime')
-        print(f"  > Saved processed daily data to {output_daily_dir}")
-
-        aggregation_rules = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-        for tf_name, rule in timeframes.items():
-            if tf_name == 'daily': continue
-            df_htf = df_daily.resample(rule).agg(aggregation_rules).dropna()
-            if df_htf.empty: continue
-            df_htf_processed = calculate_all_indicators(df_htf)
-            output_htf_dir = os.path.join(output_base_dir, tf_name)
-            os.makedirs(output_htf_dir, exist_ok=True)
-            output_htf_path = os.path.join(output_htf_dir, f"{symbol_name}_{tf_name}_with_indicators.csv")
-            df_htf_processed.to_csv(output_htf_path, index_label='datetime')
-            print(f"  > Saved processed {tf_name} data to {output_htf_dir}")
+    num_processes = max(1, cpu_count() - 1)
+    print(f"Starting parallel processing with {num_processes} workers...")
+    
+    with Pool(processes=num_processes) as pool:
+        pool.map(process_symbol, symbols_to_process)
 
     print("\n--- Universal Data Processing Complete! ---")
 
