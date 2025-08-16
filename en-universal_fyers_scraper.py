@@ -7,11 +7,9 @@
 # longer cooldown for throttling errors. It also allows for explicit
 # control over the number of parallel processes.
 #
-# MODIFICATION (v2.2 - Historical Backfill Logic):
-# - Default start date changed to 2010-01-01 to fetch a longer history.
-# - Refined the retry logic to explicitly use exponential backoff ONLY for
-#   rate-limit errors, while using a fixed cooldown for other general API errors.
-# - Added logic to intelligently backfill missing historical data for existing files.
+# MODIFICATION (v1.9 - Index Only Flag):
+# - Added a new '--only-index' command-line argument to allow scraping
+#   data exclusively for the indices defined in the config.
 
 import os
 import sys
@@ -21,7 +19,6 @@ from datetime import datetime, timedelta
 import time
 import json
 from multiprocessing import Pool, Manager, current_process
-import numpy as np
 
 # --- Import Configuration ---
 try:
@@ -48,11 +45,11 @@ SCRIPT_CONFIG = {
     "output_dir": os.path.join("data", "universal_historical_data"),
     "nifty_list_csv": "nifty500.csv",
     "index_list": ["NIFTY200_INDEX", "INDIAVIX","NIFTY500-INDEX"],
-    "default_start_date": "2010-01-01", # MODIFIED: Start date extended to 2010
+    "default_start_date": "2018-01-01",
     "token_file": "fyers_access_token.txt",
     "log_path": os.getcwd(),
     "api_cooldown_seconds": 1.1,
-    "api_retries": 5, # Increased retries for better resilience
+    "api_retries": 3,
     "parallel_processes": 4 
 }
 
@@ -135,7 +132,7 @@ def get_access_token():
 
 def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
     """
-    Fetches historical OHLC data with a retry mechanism and exponential backoff.
+    Fetches historical OHLC data with a retry mechanism and specific error handling.
     """
     data = {
         "symbol": symbol,
@@ -154,11 +151,9 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
                 print(f"    - Worker {current_process().pid} ERROR: Invalid symbol {symbol}. Skipping retries.")
                 return INVALID_SYMBOL_ERROR
             
-            # Exponential backoff specifically for rate limiting
-            if "request limit reached" in response.get("message", "").lower():
-                wait_time = (2 ** i) + np.random.uniform(0, 1) # Add jitter
-                print(f"    - Worker {current_process().pid} INFO: API rate limit reached for {symbol}. Waiting for {wait_time:.2f} seconds...")
-                time.sleep(wait_time) 
+            if response.get("message") == "request limit reached":
+                print(f"    - Worker {current_process().pid} ERROR: API request limit reached for {symbol}. Retrying in 10 seconds...")
+                time.sleep(10) 
                 continue 
             
             if response.get("s") == 'ok':
@@ -172,21 +167,20 @@ def get_historical_data(fyers_client, symbol, resolution, from_date, to_date):
                 df.set_index('datetime', inplace=True)
                 return df
             else:
-                # Use a fixed delay for other general API errors
                 print(f"    - Worker {current_process().pid} API Error for {symbol} (Attempt {i+1}): {response.get('message', 'Unknown error')}")
-                time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"])
-
         except Exception as e:
-            # Use a fixed delay for exceptions
             print(f"    - Worker {current_process().pid} An exception occurred for {symbol} (Attempt {i+1}): {e}")
-            time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"])
+        
+        if i < SCRIPT_CONFIG["api_retries"] - 1:
+            time.sleep(SCRIPT_CONFIG["api_cooldown_seconds"] * (2**i))
 
     print(f"    - Worker {current_process().pid} Failed to fetch data for {symbol} after {SCRIPT_CONFIG['api_retries']} attempts.")
-    return THROTTLED_ERROR # Return error if all retries fail
+    return pd.DataFrame()
 
 def process_single_symbol(symbol_name):
     """
-    Worker function to scrape data for a single symbol, with backfill logic.
+    Worker function to scrape data for a single symbol, now with explicit
+    handling for errors and throttling.
     """
     global global_fyers_client, global_interval, global_file_suffix, global_force_download, global_failed_symbols_list, global_throttled_symbols_list
     
@@ -199,100 +193,86 @@ def process_single_symbol(symbol_name):
     resolution = "D" if global_interval == "daily" else "15"
     batch_months = 6 if global_interval == "daily" else 2
     output_path = os.path.join(SCRIPT_CONFIG["output_dir"], f"{symbol_name}_{global_file_suffix}.csv")
-    
-    existing_df = None
-    if os.path.exists(output_path) and not global_force_download:
-        try:
-            existing_df = pd.read_csv(output_path, index_col='datetime', parse_dates=True)
-        except Exception as e:
-            print(f"    - Worker {current_process().pid} Could not read existing file. Performing full download. Error: {e}")
-            existing_df = None
-
-    # --- Backfill Logic ---
-    all_backfill_batches = []
-    if existing_df is not None and not existing_df.empty:
-        first_date_in_file = existing_df.index.min().date()
-        backfill_start_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
-        backfill_end_date = first_date_in_file - timedelta(days=1)
-
-        if backfill_start_date < backfill_end_date:
-            print(f"    - Worker {current_process().pid} Backfilling data from {backfill_start_date} to {backfill_end_date}")
-            batch_start_date = backfill_start_date
-            while batch_start_date <= backfill_end_date:
-                batch_end_dt = pd.to_datetime(batch_start_date) + pd.DateOffset(months=batch_months) - timedelta(days=1)
-                if batch_end_dt.date() > backfill_end_date:
-                    batch_end_dt = pd.to_datetime(backfill_end_date)
-
-                from_date_str = batch_start_date.strftime('%Y-%m-%d')
-                to_date_str = batch_end_dt.strftime('%Y-%m-%d')
-                
-                fyers_symbol = FYERS_INDEX_SYMBOLS.get(symbol_name, f"NSE:{symbol_name}-EQ")
-                
-                print(f"    - Worker {current_process().pid} Fetching backfill batch for {symbol_name}: {from_date_str} to {to_date_str}")
-                batch_df = get_historical_data(global_fyers_client, fyers_symbol, resolution, from_date_str, to_date_str)
-                
-                if isinstance(batch_df, str):
-                    if batch_df == INVALID_SYMBOL_ERROR: global_failed_symbols_list.append(symbol_name); return
-                    if batch_df == THROTTLED_ERROR: global_throttled_symbols_list.append(symbol_name); return
-                if not batch_df.empty: all_backfill_batches.append(batch_df)
-                batch_start_date = batch_end_dt.date() + timedelta(days=1)
-
-    # --- Forward Fill (Append) Logic ---
-    all_forward_batches = []
     to_date = datetime.now()
-    from_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
     
-    if existing_df is not None and not existing_df.empty:
-        from_date = existing_df.index.max().date() + timedelta(days=1)
+    from_date = None
+    if global_force_download:
+        from_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
+        print(f"    - Worker {current_process().pid} FORCE DOWNLOAD enabled. Fetching from {from_date.strftime('%Y-%m-%d')}")
+    elif os.path.exists(output_path):
+        try:
+            existing_df = pd.read_csv(output_path)
+            if not existing_df.empty:
+                last_date_str = existing_df['datetime'].iloc[-1]
+                last_date = pd.to_datetime(last_date_str).date()
+                from_date = last_date + timedelta(days=1)
+                print(f"    - Worker {current_process().pid} Existing data found. Fetching from {from_date.strftime('%Y-%m-%d')}")
+            else:
+                from_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
+                print(f"    - Worker {current_process().pid} Existing file is empty. Performing full download.")
+        except Exception as e:
+            from_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
+            print(f"    - Worker {current_process().pid} Could not read existing file. Performing full download. Error: {e}")
+    else:
+        from_date = pd.to_datetime(SCRIPT_CONFIG["default_start_date"]).date()
+        print(f"    - Worker {current_process().pid} No existing data. Performing full download.")
 
-    if from_date <= to_date.date():
-        print(f"    - Worker {current_process().pid} Fetching new data from {from_date}")
-        batch_start_date = from_date
-        while batch_start_date <= to_date.date():
-            batch_end_dt = pd.to_datetime(batch_start_date) + pd.DateOffset(months=batch_months) - timedelta(days=1)
-            if batch_end_dt.date() > to_date.date():
-                batch_end_dt = to_date
+    if from_date > to_date.date():
+         print(f"    - Worker {current_process().pid} Data is already up to date for {symbol_name}. Skipping.")
+         return
+    
+    all_data_batches = []
+    batch_start_date = from_date
 
-            from_date_str = batch_start_date.strftime('%Y-%m-%d')
-            to_date_str = batch_end_dt.strftime('%Y-%m-%d')
-            
-            fyers_symbol = FYERS_INDEX_SYMBOLS.get(symbol_name, f"NSE:{symbol_name}-EQ")
-            
-            print(f"    - Worker {current_process().pid} Fetching forward batch for {symbol_name}: {from_date_str} to {to_date_str}")
-            batch_df = get_historical_data(global_fyers_client, fyers_symbol, resolution, from_date_str, to_date_str)
-            
-            if isinstance(batch_df, str):
-                if batch_df == INVALID_SYMBOL_ERROR: global_failed_symbols_list.append(symbol_name); return
-                if batch_df == THROTTLED_ERROR: global_throttled_symbols_list.append(symbol_name); return
-            if not batch_df.empty: all_forward_batches.append(batch_df)
-            batch_start_date = batch_end_dt.date() + timedelta(days=1)
+    while batch_start_date <= to_date.date():
+        batch_end_dt = pd.to_datetime(batch_start_date) + pd.DateOffset(months=batch_months) - timedelta(days=1)
+        if batch_end_dt.date() > to_date.date():
+            batch_end_dt = to_date
 
-    # --- Combine and Save ---
-    if not all_backfill_batches and not all_forward_batches:
-        print(f"    - Worker {current_process().pid} No new or historical data to save for {symbol_name}.")
+        from_date_str = batch_start_date.strftime('%Y-%m-%d')
+        to_date_str = batch_end_dt.strftime('%Y-%m-%d')
+        
+        if symbol_name in FYERS_INDEX_SYMBOLS:
+            fyers_symbol = FYERS_INDEX_SYMBOLS[symbol_name]
+        else:
+            fyers_symbol = f"NSE:{symbol_name}-EQ"
+        
+        print(f"    - Worker {current_process().pid} Fetching batch for {symbol_name}: {from_date_str} to {to_date_str}")
+        batch_df = get_historical_data(global_fyers_client, fyers_symbol, resolution, from_date_str, to_date_str)
+        
+        if isinstance(batch_df, str):
+            if batch_df == INVALID_SYMBOL_ERROR:
+                global_failed_symbols_list.append(symbol_name)
+                return
+            elif batch_df == THROTTLED_ERROR:
+                global_throttled_symbols_list.append(symbol_name)
+                return
+
+        if not batch_df.empty:
+            all_data_batches.append(batch_df)
+
+        batch_start_date = batch_end_dt.date() + timedelta(days=1)
+
+    if not all_data_batches:
+        print(f"    - Worker {current_process().pid} Info: No new data returned for {symbol_name}.")
         return
-
-    backfill_df = pd.concat(all_backfill_batches) if all_backfill_batches else pd.DataFrame()
-    forward_df = pd.concat(all_forward_batches) if all_forward_batches else pd.DataFrame()
-    
-    # Combine all dataframes: backfilled, existing, and new forward data
-    combined_df = pd.concat([backfill_df, existing_df, forward_df])
-    
-    # Remove any duplicates and sort chronologically
-    combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
-    combined_df.sort_index(inplace=True)
-    
-    # Overwrite the file with the complete dataset
-    combined_df.to_csv(output_path, mode='w', header=True, index_label='datetime')
-    print(f"    - Worker {current_process().pid} Success: Saved/updated {len(combined_df)} total records for {symbol_name} to {output_path}")
+        
+    new_data_df = pd.concat(all_data_batches)
+    if global_force_download or not os.path.exists(output_path):
+        new_data_df.to_csv(output_path, mode='w', header=True, index_label='datetime')
+        print(f"    - Worker {current_process().pid} Success: Saved {len(new_data_df)} records for {symbol_name} to {output_path}")
+    else:
+        new_data_df.to_csv(output_path, mode='a', header=False)
+        print(f"    - Worker {current_process().pid} Success: Appended {len(new_data_df)} new records for {symbol_name} to {output_path}")
 
 def main():
     """
-    Main function to orchestrate the scraping process.
+    Main function to orchestrate the scraping process, now using multiprocessing.
     """
-    parser = argparse.ArgumentParser(description="Universal Fyers Scraper.")
+    parser = argparse.ArgumentParser(description="Universal Fyers Scraper for Nifty 200 Project.")
     parser.add_argument('--interval', type=str, required=False, choices=['daily', '15min'], help='Specify an interval to scrape. If not provided, all intervals will be scraped.')
     parser.add_argument('--force', action='store_true', help='Force a full re-download of data, ignoring existing files.')
+    # --- CHANGED LINE ---
     parser.add_argument('--only-index', action='store_true', help='Scrape data only for the indices defined in the config.')
     args = parser.parse_args()
 
@@ -305,9 +285,11 @@ def main():
     print(f"Output directory set to: '{SCRIPT_CONFIG['output_dir']}'")
     
     equity_symbols = []
+    # --- CHANGED BLOCK START ---
     if args.only_index:
         print("\n--only-index flag detected. Scraping only index symbols.--")
     elif SCRIPT_CONFIG["nifty_list_csv"]:
+    # --- CHANGED BLOCK END ---
         try:
             equity_symbols = pd.read_csv(SCRIPT_CONFIG["nifty_list_csv"])["Symbol"].tolist()
         except FileNotFoundError:
