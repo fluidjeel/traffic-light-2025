@@ -3,10 +3,10 @@
 # Description:
 # A realistic, portfolio-level backtester for a multi-candle breakout strategy.
 #
-# v29 (Adaptive Regime Logic):
-# - Implemented an adaptive system that uses different parameters based on the market regime.
-# - "Offensive" playbook (loose stops, higher risk) is used in "Strong Uptrend" regimes.
-# - "Defensive" playbook (tight stops, lower risk) is used in "Weakening" regimes.
+# v35 (Circuit Breaker Fix):
+# - Corrected a logical flaw in the portfolio circuit breaker.
+# - The 'peak_equity' watermark is now correctly reset after the cooldown period ends,
+#   preventing the system from getting stuck in a perpetual trigger loop.
 
 import pandas as pd
 import os
@@ -28,81 +28,126 @@ config = {
     # --- Strategy-Specific Settings ---
     'strategy_name': 'multi_candle_breakout_adaptive', # A name for the strategy run.
     'nifty_list_csv': 'nifty500.csv', # The CSV file containing the universe of stock symbols to trade.
-    'breakout_lookback_period': 2, # The number of days to look back for the breakout high/low.
+    'breakout_lookback_period': 2, # The number of days to look back from the setup day to find the highest high (for entry) and lowest low (for stop). A value of 1 equals the original single-candle strategy.
 
     # --- Market Regime Filter ---
     'market_regime_filter': {
-        'enabled': True,
-        'index_symbol': 'NIFTY500-INDEX',
-        'slow_ma_period': 50,
-        'fast_ma_period': 30,
+        'enabled': True,                  # Master switch to enable or disable the regime filter. If False, the system will always trade.
+        'index_symbol': 'NIFTY500-INDEX', # The market index used to determine the regime.
+        'slow_ma_period': 50,             # The period for the slow moving average. A close below this signals a "Downtrend".
+        'fast_ma_period': 30,             # The period for the fast moving average. A close below this (but above the slow MA) signals a "Weakening" trend.
     },
 
-    # --- NEW: Adaptive Parameters based on Market Regime ---
+    # --- Adaptive Parameters based on Market Regime ---
     'adaptive_regime_parameters': {
-        'enabled': True,
-        'strong_uptrend': { # Offensive Playbook for Bull Markets
-            'risk_percents': [0.5, 0.5, 1.0],
-            'high_rsi_multiplier': 8.0,
-            'max_long_ema_dist_pct': 100.0
+        'enabled': True, # Master switch to enable or disable the adaptive playbooks.
+        'strong_uptrend': { # Offensive Playbook used when the market is healthy (close > 30SMA and > 50SMA).
+            'risk_percents': [0.5, 0.5, 1.0],   # Risk allocation for [Low, Medium, High] VIX environments.
+            'high_rsi_multiplier': 4.0,         # ATR multiplier for the trailing stop on high RSI (momentum) trades.
+            'low_rsi_multiplier': 2.0,          # ATR multiplier for the trailing stop on low RSI (mean-reversion) trades.
+            'max_long_ema_dist_pct': 100.0      # The maximum allowed distance (in %) from the 10 EMA for a setup. 100.0 is effectively no limit.
         },
-        'weakening': { # Defensive Playbook for Choppy/Corrective Markets
-            'risk_percents': [0.5, 0.25, 1.0],
-            'high_rsi_multiplier': 4.0,
-            'max_long_ema_dist_pct': 10.0
+        'weakening': { # Defensive Playbook used when the market is choppy or correcting (close < 30SMA but > 50SMA).
+            'risk_percents': [0.5, 0.25, 1.0],  # Risk is cut in half for the unprofitable Medium VIX environment.
+            'high_rsi_multiplier': 4.0,         # A tighter trailing stop for momentum trades to protect profits.
+            'low_rsi_multiplier': 2.0,          # A tighter trailing stop for mean-reversion trades.
+            'max_long_ema_dist_pct': 10.0       # A strict filter to avoid chasing over-extended breakouts that are likely to fail.
+        }
+    },
+    
+    # --- Black Swan Protection Layers ---
+    'black_swan_protection': {
+        'enabled': False, # Master switch for all black swan features.
+        
+        # Preventive Layer 1: Portfolio Heat Monitor
+        'portfolio_heat_monitor': {
+            'enabled': True,                # If True, stops new trades when total portfolio risk is too high.
+            'max_total_risk_percent': 10.0  # The max % of equity that can be at risk across all open positions.
+        },
+        
+        # Preventive Layer 2: VIX Panic Filter
+        'vix_panic_filter': {
+            'enabled': True,              # If True, tightens all stops when VIX spikes.
+            'vix_threshold': 40.0,        # The VIX level that signals panic.
+            'defensive_atr_multiplier': 2.0 # The tight ATR multiplier to use on ALL trades during a panic.
+        },
+
+        # Reactive Layer 3: Portfolio Circuit Breaker
+        'portfolio_circuit_breaker': {
+            'enabled': True,               # If True, liquidates the portfolio on a severe drawdown.
+            'max_drawdown_percent': 12.0,   # The max drawdown % from peak equity that triggers the circuit breaker.
+            'cooldown_days': 30            # The number of trading days to halt all new trades after a circuit breaker event.
         }
     },
 
     # --- Realism & Risk Management ---
-    'max_open_positions': 10,
-    'slippage_on_entry_percent': 0.05,
-    'slippage_on_exit_percent': 0.05,
+    'max_open_positions': 10,           # A hard limit on the number of concurrent open positions.
+    'slippage_on_entry_percent': 0.05,  # Simulates price slippage on all trade entries.
+    'slippage_on_exit_percent': 0.05,   # Simulates price slippage on all stop-loss exits.
+    
+    # --- Transaction Cost Model (for India Equity Delivery) ---
+    'transaction_costs': {
+        'enabled': True,                 # Master switch to enable or disable all transaction costs.
+        'brokerage_percent': 0,          # Brokerage as a percentage of turnover. 0 for discount brokers on delivery.
+        'stt_buy_percent': 0.1,          # Securities Transaction Tax on the buy side.
+        'stt_sell_percent': 0.1,         # Securities Transaction Tax on the sell side.
+        'txn_charge_percent': 0.00345,   # Exchange Transaction Charges (NSE).
+        'gst_percent': 18,               # GST applied to brokerage and transaction charges.
+        'sebi_turnover_percent': 0.0001, # SEBI turnover fees.
+        'stamp_duty_percent': 0.015      # Stamp duty, applied only on the buy side.
+    },
 
     # --- Dynamic Risk Management (VIX-based) ---
     'dynamic_risk': {
-        'enabled': True,
-        'vix_thresholds': [15, 22],
-        'risk_percents': [0.5, 0.5, 1.0] # Default/Fallback values
+        'enabled': True,                 # Master switch for VIX-based risk sizing.
+        'vix_thresholds': [15, 22],      # The boundaries for Low (<15), Medium (15-22), and High (>22) VIX regimes.
+        'risk_percents': [0.5, 0.5, 1.0] # Fallback risk percentages if the adaptive system is disabled.
     },
-    'risk_per_trade_percent': 2.0,
+    'risk_per_trade_percent': 2.0,       # A single, fixed risk percentage if dynamic risk is disabled.
     
     # --- Entry Filters ---
     'entry_filters': {
-        'use_ema_filter': True,
-        'ema_period': 10,
-        'use_ema_distance_filter': True,
-        'min_long_ema_dist_pct': 0.0,
-        'max_long_ema_dist_pct': 100.0, # Default/Fallback value
-        'use_volume_filter': True,
-        'min_volume_ratio': 3.0,
-        'use_rsi_filter': True,
-        'rsi_ranges': [[0, 40], [70, 100]],
-        'min_risk_percent': 0.1,
+        'use_ema_filter': True,              # If True, setup candle's close must be above the EMA.
+        'ema_period': 10,                    # The period for the EMA trend filter.
+        'use_ema_distance_filter': True,     # If True, enforces the min/max distance from the EMA.
+        'min_long_ema_dist_pct': 0.0,        # The minimum percentage distance above the EMA for a valid setup.
+        'max_long_ema_dist_pct': 100.0,      # The maximum percentage distance above the EMA. This value is overridden by the adaptive regime.
+        'use_volume_filter': True,           # If True, enforces the volume ratio filter.
+        'min_volume_ratio': 3.0,             # The minimum volume ratio (volume / 20-day SMA) for a momentum setup.
+        'use_rsi_filter': True,              # If True, enforces the RSI range filter.
+        'rsi_ranges': [[0, 40], [70, 100]],  # The valid RSI ranges for a setup (mean-reversion and momentum).
+        'min_risk_percent': 0.1,             # A safety filter to avoid trades with an extremely small stop-loss distance.
+
+        # Sub-strategy for Mean Reversion setups
+        'mean_reversion_sub_strategy': {
+            'enabled': True,                 # If True, uses a different set of rules for RSI < 40 setups.
+            'min_volume_ratio': 1.5          # A less restrictive volume requirement, as mean-reversion trades often occur on lower volume.
+        }
     },
 
     # --- Trade Management & Trailing Stops ---
     'trade_management': {
-        'use_atr': True,
-        'use_breakeven': True,
-        'atr_period': 14,
-        'breakeven_buffer_percent': 0.1,
+        'use_atr': True,                         # Master switch for the ATR trailing stop.
+        'use_breakeven': True,                   # Master switch for the intelligent, cost-aware breakeven logic.
+        'breakeven_profit_buffer_percent': 0.1,  # The small net profit target to lock in on a breakeven exit.
+        'atr_period': 14,                        # The lookback period for the ATR calculation.
         'dynamic_atr': {
-            'enabled': True,
-            'rsi_threshold': 60,
-            'low_rsi_multiplier': 3.0,
-            'high_rsi_multiplier': 8.0 # Default/Fallback value
+            'enabled': True,                     # Master switch for the adaptive ATR multiplier.
+            'rsi_threshold': 60,                 # The RSI value at entry that separates a mean-reversion (<60) from a momentum (>=60) trade for exit purposes.
+            'low_rsi_multiplier': 3.0,           # Fallback ATR multiplier for low RSI trades.
+            'high_rsi_multiplier': 8.0           # Fallback ATR multiplier for high RSI trades.
         },
     },
 
     # --- Data & Logging ---
-    'data_folder': os.path.join('data', 'universal_processed', 'daily'),
-    'log_folder': 'backtest_logs',
+    'data_folder': os.path.join('data', 'universal_processed', 'daily'), # The directory where the processed data files with indicators are stored.
+    'log_folder': 'backtest_logs',                                      # The root directory where all backtest logs will be saved.
     'log_options': {
-        'log_trades': True,
-        'log_summary': True,
-        'log_missed_trades': True
+        'log_trades': True,         # If True, saves a detailed CSV of all executed trades.
+        'log_summary': True,        # If True, saves a text file with the final performance summary.
+        'log_missed_trades': True   # If True, saves a CSV of all setups that were identified but not taken.
     },
-    'vix_symbol': 'INDIAVIX',
+    'vix_symbol': 'INDIAVIX', # The symbol for the India VIX index used for volatility measurements.
 }
 
 
@@ -119,10 +164,41 @@ def format_config_for_summary(cfg):
             output.append(f"{key}: {value}")
     return "\n".join(output)
 
-def create_enhanced_trade_log(pos, exit_time, exit_price, exit_type):
+def calculate_transaction_costs(turnover, side, costs_cfg):
+    """Calculates all applicable transaction costs for a trade leg."""
+    if not costs_cfg.get('enabled', False):
+        return 0
+
+    brokerage = turnover * (costs_cfg['brokerage_percent'] / 100)
+    txn_charge = turnover * (costs_cfg['txn_charge_percent'] / 100)
+    
+    total_charge_for_gst = brokerage + txn_charge
+    gst = total_charge_for_gst * (costs_cfg['gst_percent'] / 100)
+    
+    sebi_charge = turnover * (costs_cfg['sebi_turnover_percent'] / 100)
+    
+    stt = 0
+    stamp_duty = 0
+    if side == 'buy':
+        stt = turnover * (costs_cfg['stt_buy_percent'] / 100)
+        stamp_duty = turnover * (costs_cfg['stamp_duty_percent'] / 100)
+    elif side == 'sell':
+        stt = turnover * (costs_cfg['stt_sell_percent'] / 100)
+        
+    total_costs = brokerage + txn_charge + gst + sebi_charge + stt + stamp_duty
+    return total_costs
+
+def create_enhanced_trade_log(pos, exit_time, exit_price, exit_type, costs_cfg):
     """Creates a detailed log entry for a closed trade."""
     base_log = pos.copy()
-    pnl = (exit_price - pos['entry_price']) * pos['shares']
+    
+    gross_pnl = (exit_price - pos['entry_price']) * pos['shares']
+    
+    exit_turnover = exit_price * pos['shares']
+    exit_costs = calculate_transaction_costs(exit_turnover, 'sell', costs_cfg)
+    
+    net_pnl = gross_pnl - pos['entry_costs'] - exit_costs
+    
     initial_risk_per_share = abs(pos['entry_price'] - pos['initial_stop_loss'])
     
     if initial_risk_per_share > 0:
@@ -134,7 +210,8 @@ def create_enhanced_trade_log(pos, exit_time, exit_price, exit_type):
         mae_R, mfe_R = 0, 0
 
     base_log.update({
-        'exit_date': exit_time, 'exit_price': exit_price, 'pnl': pnl, 'exit_type': exit_type,
+        'exit_date': exit_time, 'exit_price': exit_price, 'pnl': net_pnl, 'exit_type': exit_type,
+        'entry_costs': pos['entry_costs'], 'exit_costs': exit_costs, 'gross_pnl': gross_pnl,
         'mae_R': mae_R, 'mfe_R': mfe_R
     })
     for key in ['lowest_price_since_entry', 'highest_price_since_entry', 'breakeven_triggered', 'target', 'capital_at_risk', 'last_close']:
@@ -191,7 +268,12 @@ def run_portfolio_backtest(cfg):
     master_dates = sorted(list(master_dates))
     print(f"Data loading complete. Running simulation from {master_dates[0].date()} to {master_dates[-1].date()}.")
 
-    portfolio = {'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 'positions': {}, 'trades': [], 'daily_values': []}
+    portfolio = {
+        'cash': cfg['initial_capital'], 'equity': cfg['initial_capital'], 
+        'positions': {}, 'trades': [], 'daily_values': [],
+        'peak_equity': cfg['initial_capital'], 'circuit_breaker_active': False,
+        'cooldown_end_date': None
+    }
     missed_trades_log = []
     watchlist = {}
     
@@ -199,17 +281,62 @@ def run_portfolio_backtest(cfg):
     ef_cfg = cfg['entry_filters']
     dr_cfg = cfg['dynamic_risk']
     adaptive_cfg = cfg.get('adaptive_regime_parameters', {})
+    costs_cfg = cfg.get('transaction_costs', {})
+    bsp_cfg = cfg.get('black_swan_protection', {})
     
     eod_equity_yesterday = cfg['initial_capital']
 
     for i, date in enumerate(master_dates):
+        # --- 0. BLACK SWAN & PORTFOLIO LEVEL CHECKS ---
+        # A. Portfolio Circuit Breaker (Reactive)
+        if bsp_cfg.get('enabled') and bsp_cfg.get('portfolio_circuit_breaker', {}).get('enabled'):
+            if portfolio['circuit_breaker_active']:
+                if date >= portfolio['cooldown_end_date']:
+                    portfolio['circuit_breaker_active'] = False
+                    # FIX: Reset the peak equity to the current equity to establish a new baseline
+                    portfolio['peak_equity'] = portfolio['equity']
+                    print(f"\n--- {date.date()}: Circuit breaker cooldown finished. Peak equity reset to {portfolio['equity']:,.0f}. Resuming trading. ---")
+                else:
+                    progress_str = f"Processing {date.date()} | CIRCUIT BREAKER ACTIVE - TRADING HALTED"
+                    sys.stdout.write(f"\r{progress_str.ljust(110)}"); sys.stdout.flush()
+                    # Still need to update equity daily even when halted
+                    eod_equity = portfolio['cash'] # No positions, so equity equals cash
+                    portfolio['equity'] = eod_equity
+                    portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
+                    eod_equity_yesterday = eod_equity
+                    continue
+            
+            current_drawdown = (portfolio['peak_equity'] - eod_equity_yesterday) / portfolio['peak_equity'] * 100 if portfolio['peak_equity'] > 0 else 0
+            cb_config = bsp_cfg.get('portfolio_circuit_breaker', {})
+            if current_drawdown >= cb_config.get('max_drawdown_percent', 7.0):
+                print(f"\n\n!!! {date.date()}: PORTFOLIO CIRCUIT BREAKER TRIGGERED! MAX DRAWDOWN OF {cb_config.get('max_drawdown_percent', 7.0)}% REACHED. LIQUIDATING ALL POSITIONS. !!!")
+                portfolio['circuit_breaker_active'] = True
+                portfolio['cooldown_end_date'] = date + pd.Timedelta(days=cb_config.get('cooldown_days', 21))
+                
+                for symbol, pos in list(portfolio['positions'].items()):
+                    if symbol in all_data and date in all_data[symbol].index:
+                        exit_price = all_data[symbol].loc[date]['open'] * (1 - cfg.get('slippage_on_exit_percent', 0) / 100)
+                        exit_trade = create_enhanced_trade_log(pos, date, exit_price, 'Circuit Breaker', costs_cfg)
+                        portfolio['trades'].append(exit_trade)
+                        portfolio['cash'] += (exit_trade['shares'] * exit_trade['exit_price'])
+                portfolio['positions'] = {}
+                # Update equity after liquidation before halting
+                eod_equity = portfolio['cash']
+                portfolio['equity'] = eod_equity
+                portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
+                eod_equity_yesterday = eod_equity
+                continue
+
         # --- 1. DETERMINE CURRENT DAY'S REGIME AND PARAMETERS ---
         regime_status = "N/A"
         scan_for_setups = True
         
-        # Set default parameters (Offensive Playbook)
-        active_params = adaptive_cfg.get('strong_uptrend', {})
+        current_vix = vix_data.loc[date]['close'] if vix_data is not None and date in vix_data.index else np.nan
         
+        active_params = adaptive_cfg.get('strong_uptrend', {})
+        regime_status = "Strong Uptrend"
+        
+        is_weakening_trend = False
         if regime_cfg.get('enabled') and regime_data is not None:
             if date in regime_data.index:
                 regime_candle = regime_data.loc[date]
@@ -226,22 +353,35 @@ def run_portfolio_backtest(cfg):
                         scan_for_setups = False
                     elif close < fast_ma:
                         regime_status = "Weakening"
-                        # Switch to Defensive Playbook
-                        if adaptive_cfg.get('enabled'):
-                            active_params = adaptive_cfg.get('weakening', {})
-                    else:
-                        regime_status = "Strong Uptrend"
+                        is_weakening_trend = True
                 else:
                     scan_for_setups = False
             else:
                 scan_for_setups = False
         
-        # Unpack the active parameters for today's logic
+        is_medium_vix = False
+        vix_thresholds = dr_cfg.get('vix_thresholds', [15, 22])
+        if pd.notna(current_vix) and vix_thresholds[0] < current_vix <= vix_thresholds[1]:
+            is_medium_vix = True
+
+        if scan_for_setups and (is_weakening_trend or is_medium_vix):
+            if adaptive_cfg.get('enabled'):
+                active_params = adaptive_cfg.get('weakening', {})
+            if is_medium_vix and not is_weakening_trend:
+                regime_status = "Medium VIX (Defensive)"
+        
+        is_vix_panic = False
+        vpf_cfg = bsp_cfg.get('vix_panic_filter', {})
+        if bsp_cfg.get('enabled') and vpf_cfg.get('enabled'):
+            if pd.notna(current_vix) and current_vix > vpf_cfg.get('vix_threshold', 40.0):
+                is_vix_panic = True
+                regime_status = "VIX PANIC (DEFENSIVE)"
+        
         current_risk_percents = active_params.get('risk_percents', dr_cfg['risk_percents'])
         current_high_rsi_mult = active_params.get('high_rsi_multiplier', tm_cfg['dynamic_atr']['high_rsi_multiplier'])
+        current_low_rsi_mult = active_params.get('low_rsi_multiplier', tm_cfg['dynamic_atr']['low_rsi_multiplier'])
         current_max_ema_dist = active_params.get('max_long_ema_dist_pct', ef_cfg['max_long_ema_dist_pct'])
 
-        current_vix = vix_data.loc[date]['close'] if vix_data is not None and date in vix_data.index else np.nan
         current_risk_percent = get_dynamic_risk(current_vix, dr_cfg, current_risk_percents)
 
         progress_str = f"Processing {date.date()} | Equity: {portfolio['equity']:,.0f} | Regime: {regime_status} | Open Pos: {len(portfolio['positions'])}"
@@ -251,11 +391,20 @@ def run_portfolio_backtest(cfg):
         for symbol, pos in portfolio['positions'].items():
             if symbol in all_data and date in all_data[symbol].index:
                 today_candle = all_data[symbol].loc[date]
+                
                 if not pos['breakeven_triggered'] and tm_cfg.get('use_breakeven'):
                     if today_candle['close'] > pos['entry_price']:
-                        buffer_amount = pos['entry_price'] * (tm_cfg['breakeven_buffer_percent'] / 100)
-                        pos['stop_loss'] = max(pos['stop_loss'], pos['entry_price'] + buffer_amount)
-                        pos['breakeven_triggered'] = True
+                        entry_turnover = pos['entry_price'] * pos['shares']
+                        estimated_exit_costs = calculate_transaction_costs(entry_turnover, 'sell', costs_cfg)
+                        total_costs = pos['entry_costs'] + estimated_exit_costs
+                        costs_per_share = total_costs / pos['shares'] if pos['shares'] > 0 else 0
+                        
+                        profit_buffer_per_share = pos['entry_price'] * (tm_cfg.get('breakeven_profit_buffer_percent', 0.1) / 100)
+                        target_breakeven_price = pos['entry_price'] + costs_per_share + profit_buffer_per_share
+                        
+                        if today_candle['close'] > target_breakeven_price:
+                            pos['stop_loss'] = max(pos['stop_loss'], target_breakeven_price)
+                            pos['breakeven_triggered'] = True
 
                 if date > pos['entry_date'] and tm_cfg.get('use_atr'):
                     prev_day_index = all_data[symbol].index.get_loc(date) - 1
@@ -263,12 +412,15 @@ def run_portfolio_backtest(cfg):
                         prev_day_data = all_data[symbol].iloc[prev_day_index]
                         atr_val = prev_day_data.get(f"atr_{tm_cfg['atr_period']}", 0)
                         
-                        atr_mult = current_high_rsi_mult # Use the adaptive multiplier
-                        dyn_atr_cfg = tm_cfg.get('dynamic_atr')
-                        if dyn_atr_cfg and dyn_atr_cfg.get('enabled'):
-                            rsi_at_entry = pos.get('rsi_at_entry', 60)
-                            if rsi_at_entry < dyn_atr_cfg['rsi_threshold']:
-                                atr_mult = dyn_atr_cfg['low_rsi_multiplier']
+                        atr_mult = current_high_rsi_mult
+                        if is_vix_panic:
+                             atr_mult = vpf_cfg.get('defensive_atr_multiplier', 2.0)
+                        else:
+                            dyn_atr_cfg = tm_cfg.get('dynamic_atr')
+                            if dyn_atr_cfg and dyn_atr_cfg.get('enabled'):
+                                rsi_at_entry = pos.get('rsi_at_entry', 60)
+                                if rsi_at_entry < dyn_atr_cfg['rsi_threshold']:
+                                    atr_mult = current_low_rsi_mult
                         
                         primary_atr_trail_value = pos['highest_price_since_entry'] - (atr_val * atr_mult)
                         pos['stop_loss'] = max(pos['stop_loss'], primary_atr_trail_value)
@@ -282,17 +434,17 @@ def run_portfolio_backtest(cfg):
             
             if today_candle['open'] <= pos['stop_loss']:
                 exit_price = today_candle['open'] * (1 - cfg.get('slippage_on_exit_percent', 0) / 100)
-                exit_trade = create_enhanced_trade_log(pos, date, exit_price, 'Stop-Loss (Gap)')
+                exit_trade = create_enhanced_trade_log(pos, date, exit_price, 'Stop-Loss (Gap)', costs_cfg)
                 portfolio['trades'].append(exit_trade)
-                portfolio['cash'] += exit_trade['shares'] * exit_trade['exit_price']
+                portfolio['cash'] += (exit_trade['shares'] * exit_trade['exit_price'])
                 positions_to_close.append(symbol)
                 continue
 
             if today_candle['low'] <= pos['stop_loss']:
                 exit_price = pos['stop_loss'] * (1 - cfg.get('slippage_on_exit_percent', 0) / 100)
-                exit_trade = create_enhanced_trade_log(pos, date, exit_price, 'Stop-Loss')
+                exit_trade = create_enhanced_trade_log(pos, date, exit_price, 'Stop-Loss', costs_cfg)
                 portfolio['trades'].append(exit_trade)
-                portfolio['cash'] += exit_trade['shares'] * exit_trade['exit_price']
+                portfolio['cash'] += (exit_trade['shares'] * exit_trade['exit_price'])
                 positions_to_close.append(symbol)
                 continue
 
@@ -333,7 +485,11 @@ def run_portfolio_backtest(cfg):
                     else:
                         capital_at_risk = eod_equity_yesterday * (current_risk_percent / 100)
                         shares = math.floor(capital_at_risk / risk_per_share) if risk_per_share > 0 else 0
-                        if shares == 0 or (shares * entry_price) > portfolio['cash']:
+                        
+                        entry_turnover = shares * entry_price
+                        entry_costs = calculate_transaction_costs(entry_turnover, 'buy', costs_cfg)
+
+                        if shares == 0 or (entry_turnover + entry_costs) > portfolio['cash']:
                             rejection_reason = "Entry Rejected: Insufficient capital"
 
             if rejection_reason:
@@ -349,7 +505,9 @@ def run_portfolio_backtest(cfg):
             risk_per_share = entry_price - effective_stop
             shares = math.floor(capital_at_risk / risk_per_share) if risk_per_share > 0 else 0
             
-            portfolio['cash'] -= shares * entry_price
+            entry_turnover = shares * entry_price
+            entry_costs = calculate_transaction_costs(entry_turnover, 'buy', costs_cfg)
+            portfolio['cash'] -= (entry_turnover)
             
             setup_candle_data = all_data[symbol].loc[order['setup_candle_date']]
             ema_col = f"ema_{ef_cfg['ema_period']}"
@@ -374,6 +532,7 @@ def run_portfolio_backtest(cfg):
                 'volume_ratio_at_entry': setup_candle_data.get('volume_ratio', np.nan),
                 'close_to_ema_dist_pct_at_entry': dist_pct,
                 'last_close': entry_day_candle['close'],
+                'entry_costs': entry_costs
             }
 
         # --- 5. EOD Equity Update ---
@@ -384,11 +543,20 @@ def run_portfolio_backtest(cfg):
             eod_equity += pos['shares'] * pos['last_close']
 
         portfolio['equity'] = eod_equity
+        portfolio['peak_equity'] = max(portfolio.get('peak_equity', 0), eod_equity)
         eod_equity_yesterday = eod_equity
         portfolio['daily_values'].append({'date': date, 'equity': eod_equity})
 
         # --- 6. Scan for New Setups for Next Day ---
-        if i + 1 < len(master_dates) and scan_for_setups:
+        halt_new_entries_due_to_heat = False
+        phm_cfg = bsp_cfg.get('portfolio_heat_monitor', {})
+        if bsp_cfg.get('enabled') and phm_cfg.get('enabled'):
+            total_current_risk = sum(p.get('capital_at_risk', 0) for p in portfolio['positions'].values())
+            max_allowed_risk = eod_equity_yesterday * (phm_cfg.get('max_total_risk_percent', 10.0) / 100)
+            if total_current_risk > max_allowed_risk:
+                halt_new_entries_due_to_heat = True
+
+        if i + 1 < len(master_dates) and scan_for_setups and not halt_new_entries_due_to_heat:
             next_day = master_dates[i+1]
             watchlist[next_day] = {}
             for symbol in symbols:
@@ -399,7 +567,14 @@ def run_portfolio_backtest(cfg):
                 is_valid_setup = True
                 rejection_reason = None
 
-                if ef_cfg.get('use_volume_filter') and setup_candle.get('volume_ratio', 0) < ef_cfg['min_volume_ratio']:
+                rsi_val = setup_candle.get('rsi_14', 50)
+                mr_cfg = ef_cfg.get('mean_reversion_sub_strategy', {})
+                required_volume_ratio = ef_cfg['min_volume_ratio']
+                
+                if mr_cfg.get('enabled') and rsi_val < ef_cfg['rsi_ranges'][0][1]:
+                    required_volume_ratio = mr_cfg['min_volume_ratio']
+
+                if ef_cfg.get('use_volume_filter') and setup_candle.get('volume_ratio', 0) < required_volume_ratio:
                     is_valid_setup = False
                     rejection_reason = "Setup Rejected: Low Volume Ratio"
 
@@ -414,7 +589,7 @@ def run_portfolio_backtest(cfg):
                         ema_val = setup_candle.get(f"ema_{ef_cfg['ema_period']}", np.nan) 
                         if pd.notna(ema_val) and ema_val > 0:
                             dist_pct = (setup_candle['close'] / ema_val - 1) * 100
-                            if not (ef_cfg['min_long_ema_dist_pct'] <= dist_pct <= current_max_ema_dist): # Use adaptive value
+                            if not (ef_cfg['min_long_ema_dist_pct'] <= dist_pct <= current_max_ema_dist):
                                 is_valid_setup = False
                                 rejection_reason = "Setup Rejected: EMA Distance Out of Range"
                         else:
@@ -422,7 +597,6 @@ def run_portfolio_backtest(cfg):
                             rejection_reason = "Setup Rejected: Invalid EMA for Distance Calc"
                 
                 if is_valid_setup and ef_cfg.get('use_rsi_filter'):
-                    rsi_val = setup_candle.get('rsi_14', 50)
                     is_in_any_range = False
                     for rsi_range in ef_cfg.get('rsi_ranges', []):
                         if rsi_range[0] <= rsi_val <= rsi_range[1]:
@@ -466,6 +640,8 @@ def run_portfolio_backtest(cfg):
         equity_df = pd.DataFrame(portfolio['daily_values']).set_index('date')
         trades_df = pd.DataFrame(portfolio['trades'])
         
+        # --- Overall Metrics ---
+        total_trades = len(trades_df)
         cagr, max_drawdown, sharpe_ratio = 0, 0, 0
         if not equity_df.empty and len(equity_df) > 1:
             years = (equity_df.index[-1] - equity_df.index[0]).days / 365.25
@@ -478,26 +654,21 @@ def run_portfolio_backtest(cfg):
             if not daily_returns.empty and daily_returns.std() > 0:
                 sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
 
-        total_trades = len(trades_df)
         profit_factor, payoff_ratio, avg_holding_period = 0, 0, 'N/A'
         if total_trades > 0:
             winners = trades_df[trades_df['pnl'] > 0]
             losers = trades_df[trades_df['pnl'] <= 0]
-            
             gross_profit = winners['pnl'].sum()
             gross_loss = abs(losers['pnl'].sum())
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
-
             avg_win = winners['pnl'].mean() if not winners.empty else 0
             avg_loss = abs(losers['pnl'].mean()) if not losers.empty else 0
             payoff_ratio = avg_win / avg_loss if avg_loss > 0 else np.inf
-
             trades_df['entry_date'] = pd.to_datetime(trades_df['entry_date'])
             trades_df['exit_date'] = pd.to_datetime(trades_df['exit_date'])
             avg_holding_period_days = (trades_df['exit_date'] - trades_df['entry_date']).mean().days
             avg_holding_period = f"{avg_holding_period_days} days"
 
-        
         config_str = format_config_for_summary(cfg)
         summary_text = f"""
 BACKTEST PARAMETERS
@@ -519,11 +690,45 @@ PERFORMANCE SUMMARY
   Profit Factor: {profit_factor:.2f}
   Payoff Ratio (Avg Win/Loss): {payoff_ratio:.2f}
   Avg. Holding Period: {avg_holding_period}
+  Total Costs Paid: {trades_df['entry_costs'].sum() + trades_df['exit_costs'].sum():,.2f}
 
 [System Activity]
   Total Setups Rejected: {len([m for m in missed_trades_log if m['stage'] == 'Setup'])}
   Total Entries Missed: {len([m for m in missed_trades_log if m['stage'] == 'Entry'])}
 """
+        # --- YoY Performance Breakdown ---
+        yoy_summary = "\nYEAR-OVER-YEAR PERFORMANCE\n======================================================\n"
+        yoy_summary += "{:<10} {:>15} {:>15} {:>10} {:>10} {:>10}\n".format("Year", "Start Equity", "End Equity", "CAGR %", "Win Rate %", "Sharpe")
+        
+        if not equity_df.empty:
+            equity_df['year'] = equity_df.index.year
+            trades_df['year'] = trades_df['exit_date'].dt.year
+            
+            # Find the first full year of trading to get accurate starting equity
+            first_trade_year = equity_df.index.year.min()
+            
+            yearly_equity = equity_df.resample('A').last()
+            start_equity_values = [cfg['initial_capital']] + yearly_equity['equity'][:-1].tolist()
+            
+            idx = 0
+            for year, group in equity_df.groupby('year'):
+                start_equity = start_equity_values[idx] if idx < len(start_equity_values) else group['equity'].iloc[0]
+                end_equity = group['equity'].iloc[-1]
+                idx += 1
+                
+                yoy_cagr = ((end_equity / start_equity) - 1) * 100 if start_equity > 0 else 0
+                
+                yearly_trades = trades_df[trades_df['year'] == year]
+                yearly_win_rate = (len(yearly_trades[yearly_trades['pnl'] > 0]) / len(yearly_trades) * 100) if not yearly_trades.empty else 0
+                
+                yearly_returns = group['equity'].pct_change().dropna()
+                yearly_sharpe = (yearly_returns.mean() / yearly_returns.std()) * np.sqrt(252) if not yearly_returns.empty and yearly_returns.std() > 0 else 0
+                
+                yoy_summary += "{:<10} {:>15,.0f} {:>15,.0f} {:>10.2f} {:>10.2f} {:>10.2f}\n".format(
+                    year, start_equity, end_equity, yoy_cagr, yearly_win_rate, yearly_sharpe)
+
+        summary_text += yoy_summary
+        
         print(summary_text)
         summary_path = os.path.join(strategy_log_folder, f"{timestamp}_summary.txt")
         with open(summary_path, 'w') as f: f.write(summary_text)

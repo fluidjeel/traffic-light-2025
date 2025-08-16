@@ -9,7 +9,7 @@ This is a complete, daily timeframe, long-only, high-conviction momentum breakou
 For the Coder 👨‍💻
 This project consists of three main Python scripts:
 
-daily_long_breakout.py: A robust, event-driven, portfolio-level backtesting engine. It features an adaptive logic module that dynamically adjusts key trading parameters (risk, stop-loss multipliers, entry filters) based on a configurable market regime filter.
+daily_long_breakout.py: A robust, event-driven, portfolio-level backtesting engine. It features an adaptive logic module that dynamically adjusts key trading parameters (risk, stop-loss multipliers, entry filters) based on a configurable market regime filter. It includes a realistic model for Indian equity transaction costs.
 
 trade_analyzer.py: A powerful post-backtest analysis tool that ingests the detailed trade logs to provide quantitative, data-driven insights for strategy refinement.
 
@@ -53,6 +53,12 @@ A buy-stop order is placed at the highest high of the last 2 days (configurable)
 
 The initial stop-loss is placed at the lowest low of the last 2 days.
 
+Trade Management (Intelligent Breakeven):
+
+The strategy uses an intelligent, cost-aware breakeven mechanism.
+
+The stop-loss is only moved up if the EOD closing price is high enough to cover all transaction costs (entry + estimated exit), ensuring a "scratch" trade is truly a net-zero PnL event.
+
 The Adaptive Parameters
 This is the core of the strategy. The following parameters change automatically based on the market regime:
 
@@ -80,6 +86,12 @@ Momentum Trail Stop
 
 4.0x ATR (Tight)
 
+Mean-Reversion Trail Stop
+
+3.0x ATR (Standard)
+
+2.0x ATR (Tight)
+
 3. The Development Journey & Current Status
 The project has reached its current state through a rigorous, multi-stage process that prioritized robustness and calculation integrity.
 
@@ -87,23 +99,25 @@ Initial Hypothesis & Prototyping: Built the core architecture and tested the bas
 
 Quantitative Deep Dive: Created trade_analyzer.py to make data-driven decisions, identifying the hybrid RSI signal.
 
-Logic Validation & Lookahead Bias Fix: A critical phase where the backtesting engine was audited. This uncovered and fixed a significant lookahead bias in the trailing stop calculation, leading to a trustworthy simulation engine.
+Logic Validation & Lookahead Bias Fix: A critical phase where the backtesting engine was audited. This uncovered and fixed a significant lookahead bias in the trailing stop calculation.
 
 Worst-Case Optimization: The strategy was intentionally optimized to survive its worst-performing historical period (2022). This led to the creation of the "Defensive Playbook" parameters.
 
-Calculation Integrity Audit: A deeper audit fixed several subtle but critical calculation flaws related to risk sizing, gap-down exits, and high/low watermark tracking, resulting in a production-ready simulation engine.
+Calculation Integrity Audit: A deeper audit fixed several subtle but critical calculation flaws related to risk sizing, gap-down exits, and high/low watermark tracking.
 
-Adaptive Regime Implementation (Final Stage): Instead of being permanently defensive, the system was upgraded to be adaptive. It now uses the "Offensive Playbook" from the original profitable model during strong markets and automatically switches to the hardened "Defensive Playbook" when the market shows weakness.
+Adaptive Regime Implementation: Instead of being permanently defensive, the system was upgraded to be adaptive. It now uses the "Offensive Playbook" during strong markets and automatically switches to the hardened "Defensive Playbook" when the market shows weakness.
+
+Cost-Aware Realism (Final Stage): A realistic model for Indian equity transaction costs was integrated, and the breakeven logic was enhanced to be fully cost-aware.
 
 Our Current Status:
-We have a finalized, validated, and robust long-only strategy that adapts its behavior to the market, aiming for both profitability in bull runs and capital preservation in choppy conditions.
+We have a finalized, validated, and robust long-only strategy that adapts its behavior to the market. It operates with a realistic cost model and aims for both profitability in bull runs and capital preservation in choppy conditions.
 
 4. Code Explained
 daily_long_breakout.py: This is the heart of the project. It's a portfolio-level simulator that iterates through historical data day-by-day. Its main loop performs five key actions in sequence:
 
 Determine Market Regime: Checks the NIFTY 500 index to select the Offensive or Defensive playbook for the day.
 
-Manage Open Positions: Calculates and checks trailing stops using T-1 data to avoid lookahead bias.
+Manage Open Positions: Calculates and checks trailing stops (ATR and intelligent breakeven) using T-1 data to avoid lookahead bias.
 
 Check Watchlist: Sees if any pending multi-candle breakout orders have been triggered.
 
@@ -115,26 +129,29 @@ trade_analyzer.py: Our primary tool for making data-driven decisions. It reads t
 
 universal_calculate_indicators.py: The script that pre-processes raw price data, calculating all the technical indicators (SMAs, EMAs, RSI, ATR, etc.) needed by the backtester.
 
-5. The Path Forward: Next Steps
-With a stable and robust adaptive strategy, the next phase of research will focus on refining this adaptive capability.
+5. The Path Forward: Future Areas of Improvement
+Based on the v31 backtest results, the next steps should focus on improving consistency and reducing drawdowns without sacrificing the core trend-following edge. The priorities are:
 
-Phase 1: Regime Filter Optimization (Current Focus)
+1. Highest Priority: Enhance the Regime Filter with a Volatility Layer
+Problem: The data shows the Medium VIX (15-22) environment is a consistent money-loser, regardless of the market trend.
 
-Hypothesis: The current 30/50 SMA filter may not be optimal. A faster filter (e.g., 20/50 SMA) or a slower one might yield better risk-adjusted returns.
+Hypothesis: By becoming even more defensive when VIX is in this "trap zone," we can significantly reduce losses during choppy years.
 
-The Plan:
+Action: Enhance the logic so the system uses the Defensive Playbook if the market is in a 'Weakening' trend OR if the VIX is in the 'Medium' range.
 
-Enhance universal_calculate_indicators.py to produce more SMA periods (e.g., 20-day SMA).
+2. Medium Priority: Develop the Mean-Reversion Sub-Strategy
+Problem: The mean-reversion signals (RSI < 40) are highly profitable with a 45% win rate, but the system rarely takes them (only 11 trades in 7.5 years).
 
-Run a series of backtests to find the optimal combination of fast and slow MAs for the regime filter.
+Hypothesis: The current entry filters are too restrictive for mean-reversion setups.
 
-Phase 2: Real-World Cost Integration
+Action: Test a logical hypothesis for a sub-strategy, such as: "If the setup RSI is < 40, then lower the min_volume_ratio requirement from 3.0 to 1.5."
 
-Enhance the backtester to incorporate more granular, realistic transaction costs (brokerage, taxes, exchange fees, etc.) to get a true "net" performance figure.
+3. Lower Priority: Introduce Partial Profit-Taking
+Problem: The high payoff ratio (14.12) means the strategy often gives back a significant amount of open profit before the trailing stop is hit.
 
-Phase 3: Live Trading Preparation
+Hypothesis: Booking partial profits will increase the number of winning trades and reduce drawdowns, creating a smoother equity curve.
 
-Refactor the core logic into a clean, production-ready script designed to generate live trading signals based on the finalized, validated adaptive model.
+Action: Implement a robust rule, such as: "When a trade's gross profit reaches 3R (three times initial risk), sell 30-50% of the position and move the stop-loss for the remainder to the cost-adjusted breakeven price."
 
 For the LLM:
 
