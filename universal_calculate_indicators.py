@@ -13,8 +13,15 @@
 import pandas as pd
 import os
 import sys
-import pandas_ta as ta
 import numpy as np
+
+# --- COMPATIBILITY FIX ---
+# Newer versions of numpy deprecated np.NaN in favor of np.nan.
+# The pandas_ta library still uses the old np.NaN, causing an ImportError.
+# This line creates the alias that pandas_ta expects, fixing the issue.
+np.NaN = np.nan
+import pandas_ta as ta
+
 from multiprocessing import Pool, cpu_count
 import argparse
 

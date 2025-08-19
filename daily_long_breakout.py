@@ -16,6 +16,13 @@ import time
 import sys
 import numpy as np
 import json
+
+# --- COMPATIBILITY FIX ---
+# Newer versions of numpy deprecated np.NaN in favor of np.nan.
+# The pandas_ta library still uses the old np.NaN, causing an ImportError.
+# This line creates the alias that pandas_ta expects, fixing the issue
+# without changing any of the core strategy logic.
+np.NaN = np.nan
 import pandas_ta as ta
 
 # --- CONFIGURATION ---
