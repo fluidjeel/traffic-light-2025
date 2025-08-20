@@ -44,7 +44,7 @@ except ImportError:
 SCRIPT_CONFIG = {
     "output_dir": os.path.join("data", "universal_historical_data"),
     "nifty_list_csv": "nifty500.csv",
-    "index_list": ["NIFTY200_INDEX", "INDIAVIX","NIFTY500-INDEX"],
+    "index_list": ["NIFTY200_INDEX", "INDIAVIX","NIFTY500-INDEX","NIFTY50-INDEX", "NIFTYBANK-INDEX"],
     "default_start_date": "2018-01-01",
     "token_file": "fyers_access_token.txt",
     "log_path": os.getcwd(),
@@ -57,7 +57,9 @@ SCRIPT_CONFIG = {
 FYERS_INDEX_SYMBOLS = {
     "NIFTY200_INDEX": "NSE:NIFTY200-INDEX",
     "INDIAVIX": "NSE:INDIAVIX-INDEX",
-    "NIFTY500-INDEX": "NSE:NIFTY500-INDEX"
+    "NIFTY500-INDEX": "NSE:NIFTY500-INDEX",
+    "NIFTY50-INDEX": "NSE:NIFTY50-INDEX",
+    "NIFTYBANK-INDEX": "NSE:NIFTYBANK-INDEX"
 }
 
 # --- GLOBAL VARIABLES FOR MULTIPROCESSING ---

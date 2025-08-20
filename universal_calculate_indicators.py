@@ -9,6 +9,15 @@
 # - The script has been parallelized using Python's multiprocessing library.
 # - Added a new '--only-index' command-line argument.
 # - Added calculation for 30, 50, and 100-day SMAs for future analysis.
+#
+# MODIFICATION (v5 - Added 5 EMA):
+# - Added calculation for the 5-period EMA.
+#
+# MODIFICATION (v6 - Added NIFTY50 & BANKNIFTY):
+# - Added NIFTY50-INDEX and NIFTYBANK-INDEX to the list of symbols to process.
+#
+# MODIFICATION (v7 - Bug Fix):
+# - Restructured symbol list creation to prevent TypeError with --only-index flag.
 
 import pandas as pd
 import os
@@ -31,7 +40,7 @@ def calculate_all_indicators(df):
         return df
     
     # --- Trend Indicators ---
-    emas = [8, 10, 20, 30, 50, 100, 200]
+    emas = [5, 8, 10, 20, 30, 50, 100, 200]
     for length in emas:
         df[f'ema_{length}'] = ta.ema(df['close'], length=length)
 
@@ -187,20 +196,27 @@ def main():
 
     nifty_list_csv = "nifty500.csv"
     
-    symbols_to_process = []
-    
+    # --- MODIFIED BLOCK ---
+    # Logic was restructured to prevent a TypeError when using the --only-index flag.
     if not args.only_index:
         try:
             stock_list_df = pd.read_csv(nifty_list_csv)
-            symbols_to_process.extend(stock_list_df["Symbol"].tolist())
+            # Start with the stock list, dropping any potential empty rows
+            symbols_to_process = stock_list_df["Symbol"].dropna().tolist()
         except FileNotFoundError:
             print(f"Warning: '{nifty_list_csv}' not found. Processing indices only.")
+            # Start with an empty list if the file is not found
+            symbols_to_process = []
+        # Add indices to the list of stocks
+        symbols_to_process.extend(["NIFTY200_INDEX", "INDIAVIX", "NIFTY500-INDEX", "NIFTY50-INDEX", "NIFTYBANK-INDEX"])
     else:
         print("\n--only-index flag detected. Calculating indicators only for index symbols.--")
-
-    symbols_to_process.extend(["NIFTY200_INDEX", "INDIAVIX", "NIFTY500-INDEX"])
+        # If the flag is used, the list ONLY contains the index symbols
+        symbols_to_process = ["NIFTY200_INDEX", "INDIAVIX", "NIFTY500-INDEX", "NIFTY50-INDEX", "NIFTYBANK-INDEX"]
     
+    # Remove duplicates and sort the final list
     symbols_to_process = sorted(list(set(symbols_to_process)))
+    # --- END OF MODIFIED BLOCK ---
 
     total_symbols = len(symbols_to_process)
     print(f"\nFound {total_symbols} symbols to process.")
