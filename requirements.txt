@@ -1,4 +1,0 @@
-truedata-ws
-pandas
-pandas-ta
-fyers-apiv3
