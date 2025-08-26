@@ -20,7 +20,7 @@ from pytz import timezone
 
 # --- CONFIGURATION ---
 # The name of the strategy to analyze. This must match the folder name in 'backtest_logs'.
-STRATEGY_NAME = "TrafficLight-Manny-SHORTS_ONLY"
+STRATEGY_NAME = "TrafficLight-Manny-LONGS_ONLY" #"TrafficLight-Manny-SHORTS_ONLY"
 # The base directory where all backtest logs are saved.
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 LOGS_BASE_DIR = os.path.join(ROOT_DIR, "backtest_logs")

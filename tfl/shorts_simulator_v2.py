@@ -1,8 +1,8 @@
-# shorts_simulator.py
+# main_tfl_simulator.py
 #
 # Description:
-# A dedicated backtester for analyzing and optimizing the short side of the strategy.
-# ENHANCEMENT: Added an optional MVWAP filter as an additional confirmation layer.
+# A comprehensive backtester for the combined "all-weather" TrafficLight-Manny strategy,
+# incorporating dynamic position sizing, portfolio-level risk management, and market realism.
 
 import pandas as pd
 import os
@@ -11,78 +11,102 @@ import logging
 import sys
 import numpy as np
 from pytz import timezone
-from multiprocessing import Pool, cpu_count
-from functools import partial
+from collections import defaultdict
+import warnings
+
+# --- SUPPRESS FUTUREWARNING ---
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ==============================================================================
 # --- CONFIGURATION SETTINGS ---
 # ==============================================================================
 
-# -- PROJECT ROOT DIRECTORY --
+# -- GLOBAL CONFIGS --
+# Determines the root of the project to build all other file paths from.
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-# -- DATE RANGE FOR BACKTEST --
+# The start date for the backtest in 'YYYY-MM-DD' format.
 START_DATE = '2018-01-01'
+# The end date for the backtest in 'YYYY-MM-DD' format.
 END_DATE = '2025-01-31'
+# A unique name for the strategy run, used for creating log directories.
+STRATEGY_NAME = "TrafficLight-Manny-ALL_WEATHER"
+# The initial capital for the simulation in INR.
+INITIAL_CAPITAL = 1000000.0
+# The percentage of capital to risk per trade. (e.g., 1.0 = 1%)
+RISK_PER_TRADE_PCT = 1.0
+# The maximum total risk allowed for all open positions. (e.g., 4.0 = 4%)
+MAX_PORTFOLIO_RISK_PCT = 4.0
+# Slippage in basis points (e.g., 2.0 = 0.02% of trade value). Applied on entry and exit.
+SLIPPAGE_BPS = 2.0
 
-# -- STRATEGY CONFIGURATION --
-STRATEGY_NAME = "TrafficLight-Manny-SHORTS_ONLY"
+# -- LONGS CONFIGS --
+LONGS_RSI_THRESHOLD = 75.0
+LONGS_ATR_TS_MULTIPLIER = 4.0
+LONGS_BREAKEVEN_TRIGGER_R = 1.0
+LONGS_BREAKEVEN_PROFIT_R = 0.1
+LONGS_AGGRESSIVE_TS_TRIGGER_R = 5.0
+LONGS_AGGRESSIVE_TS_MULTIPLIER = 1.0
+
+# -- SHORTS CONFIGS --
+SHORTS_RSI_THRESHOLD = 25.0
+SHORTS_ATR_TS_MULTIPLIER = 2.5
+SHORTS_BREAKEVEN_TRIGGER_R = 1.0
+SHORTS_BREAKEVEN_PROFIT_R = 0.1
+SHORTS_AGGRESSIVE_TS_TRIGGER_R = 3.0
+SHORTS_AGGRESSIVE_TS_MULTIPLIER = 1.0
+
+# --- SHARED FILTERS & SETTINGS ---
 RISK_REWARD_RATIO = 10.0
-
-# --- DYNAMIC PATTERN CONFIGURATION ---
 MAX_PATTERN_LOOKBACK = 10
 MIN_CONSECUTIVE_CANDLES = 1
-
-
-# -- SIMULATOR MODE --
-TRADING_MODE = "POSITIONAL"
-
-# -- TRADE MANAGEMENT --
-USE_ATR_TRAILING_STOP = True
-ATR_TS_PERIOD = 14
-ATR_TS_MULTIPLIER = 2.0
-
-# -- BREAKEVEN STOP LOGIC --
-USE_BREAKEVEN_STOP = True
-BREAKEVEN_TRIGGER_R = 0.5
-BREAKEVEN_PROFIT_R = 0.1
-
-# -- MULTI-STAGE TRAILING STOP --
-USE_MULTI_STAGE_TS = True
-AGGRESSIVE_TS_TRIGGER_R = 3.0
-AGGRESSIVE_TS_MULTIPLIER = 1.0
-
-# --- DYNAMIC UNIVERSE FILTER ---
-USE_DYNAMIC_UNIVERSE = False
-VIX_SYMBOL = 'INDIAVIX'
-VIX_THRESHOLD = 20.0
-VOLATILITY_ATR_PERIOD = 14
-VOLATILITY_UNIVERSE_PERCENTILE = 0.75
-
-# --- NEW: ADDITIONAL MVWAP FILTER ---
-# If enabled, this adds a final check. Only shorts stocks trading below their MVWAP.
-# This is applied *after* the dynamic universe filter. It is skipped for indices.
 USE_ADDITIONAL_MVWAP_FILTER = True
 MVWAP_PERIOD = 50
-
+USE_RSI_FILTER = True
+INDEX_EMA_PERIOD = 50
+TRADING_MODE = "POSITIONAL"
+EOD_TIME = "15:15"
+ADDITIONAL_SYMBOLS = ['NIFTY50-INDEX', 'NIFTYBANK-INDEX']
 
 # -- DATA & FILE PATHS --
 DATA_DIRECTORY_15MIN = os.path.join(ROOT_DIR, "data", "universal_processed", "15min")
 DATA_DIRECTORY_DAILY = os.path.join(ROOT_DIR, "data", "universal_processed", "daily")
 SYMBOL_LIST_PATH = os.path.join(ROOT_DIR, "nifty200_fno.csv")
-
-# -- ADDITIONAL SYMBOLS --
-ADDITIONAL_SYMBOLS = ['NIFTY50-INDEX', 'NIFTYBANK-INDEX']
-
-# -- LOGGING CONFIGURATION --
 LOGS_BASE_DIR = os.path.join(ROOT_DIR, "backtest_logs")
 
-# -- TRADING SESSION --
-EOD_TIME = "15:15"
 
 # ==============================================================================
 # --- BACKTESTING ENGINE ---
 # ==============================================================================
+
+class PortfolioManager:
+    """Manages the overall portfolio state, including capital, open positions, and risk."""
+    def __init__(self, initial_capital, risk_per_trade_pct, max_portfolio_risk_pct):
+        self.initial_capital = initial_capital
+        self.capital = initial_capital
+        self.risk_per_trade_value = initial_capital * (risk_per_trade_pct / 100)
+        self.max_portfolio_risk_value = initial_capital * (max_portfolio_risk_pct / 100)
+        self.active_trades = []
+        self.total_risk_at_entry = 0.0
+
+    def check_and_add_trade(self, trade):
+        """Checks if a new trade can be opened without exceeding max portfolio risk."""
+        new_total_risk = self.total_risk_at_entry + trade['risk_value']
+        if new_total_risk > self.max_portfolio_risk_value:
+            return False, "Max portfolio risk exceeded."
+        if trade['cost'] > self.capital:
+            return False, "Insufficient capital."
+        
+        self.active_trades.append(trade)
+        self.capital -= trade['cost']
+        self.total_risk_at_entry = new_total_risk
+        return True, None
+
+    def update_on_exit(self, trade, pnl):
+        """Updates portfolio state when a trade is closed."""
+        self.capital += trade['cost'] + pnl
+        self.total_risk_at_entry -= trade['risk_value']
+        self.active_trades.remove(trade)
+
 
 def setup_logging(log_dir):
     """Configures the logging for the simulation summary."""
@@ -91,177 +115,254 @@ def setup_logging(log_dir):
 
 def log_configs():
     """Logs the configuration settings used for the backtest run."""
-    logging.info("--- Starting SHORTS-ONLY Backtest Simulation ---")
-    logging.info(f"  - Strategy Name: {STRATEGY_NAME}")
-    logging.info(f"  - Backtest Period: {START_DATE} to {END_DATE}")
-    logging.info(f"  - Max Lookback: {MAX_PATTERN_LOOKBACK}, Min Consecutive: {MIN_CONSECUTIVE_CANDLES}")
-    logging.info(f"  - Using Dynamic Universe Filter: {USE_DYNAMIC_UNIVERSE} (VIX > {VIX_THRESHOLD}, Top {100 - VOLATILITY_UNIVERSE_PERCENTILE*100}% Volatility)")
-    logging.info(f"  - Using Additional MVWAP Filter: {USE_ADDITIONAL_MVWAP_FILTER} (Period: {MVWAP_PERIOD})")
+    logging.info("--- Starting ALL_WEATHER Backtest Simulation ---")
+    
+    config_vars = {
+        'Strategy Name': STRATEGY_NAME,
+        'Backtest Period': f"{START_DATE} to {END_DATE}",
+        'Initial Capital': f"INR {INITIAL_CAPITAL:,.2f}",
+        'Risk per Trade': f"{RISK_PER_TRADE_PCT}% (INR {INITIAL_CAPITAL * RISK_PER_TRADE_PCT / 100:,.2f})",
+        'Max Portfolio Risk': f"{MAX_PORTFOLIO_RISK_PCT}% (INR {INITIAL_CAPITAL * MAX_PORTFOLIO_RISK_PCT / 100:,.2f})",
+        'Slippage': f"{SLIPPAGE_BPS} bps",
+        'Longs | RSI Filter': f"RSI > {LONGS_RSI_THRESHOLD}",
+        'Longs | ATR Multiplier': LONGS_ATR_TS_MULTIPLIER,
+        'Shorts | RSI Filter': f"RSI < {SHORTS_RSI_THRESHOLD}",
+        'Shorts | ATR Multiplier': SHORTS_ATR_TS_MULTIPLIER,
+    }
+    
+    for key, value in config_vars.items():
+        logging.info(f"  - {key}: {value}")
+
     logging.info("-" * 30)
 
-def find_trade_setup(df_slice):
-    """
-    Scans backwards from the last candle within the lookback window to find a
-    valid pattern of consecutive green candles followed by a red candle.
-    """
-    signal_candle = df_slice.iloc[-1]
-    if signal_candle['close'] >= signal_candle['open']:
-        return None, None, None
+def calculate_position_size(risk_value, initial_risk_per_unit):
+    """Calculates the number of units to trade based on a fixed risk amount."""
+    if initial_risk_per_unit <= 0:
+        return 0, 0
+    num_units = risk_value / initial_risk_per_unit
+    return int(num_units), num_units * initial_risk_per_unit
 
-    consecutive_green_count = 0
-    for i in range(len(df_slice) - 2, -1, -1):
-        if df_slice.iloc[i]['close'] > df_slice.iloc[i]['open']:
-            consecutive_green_count += 1
-        else:
-            break
-            
-    if consecutive_green_count >= MIN_CONSECUTIVE_CANDLES:
-        pattern_candles = df_slice.iloc[-(consecutive_green_count + 1):]
-        pattern_high = pattern_candles['high'].max()
-        pattern_low = pattern_candles['low'].min()
-        return 'SHORT', pattern_high, pattern_low
-        
-    return None, None, None
-
-def run_backtest(df, symbol, daily_filters, daily_data_map):
-    """Main backtesting function that iterates through the data candle by candle."""
-    trades = []
-    active_trade = None
-    atr_col = f'atr_{ATR_TS_PERIOD}'
-    is_index = "-INDEX" in symbol
+def run_simulation(all_data_map, portfolio, trade_log, rejected_log, signals_by_timestamp):
+    """
+    Main simulation loop that processes all symbols chronologically.
+    """
+    tz = timezone('Asia/Kolkata')
     
-    symbol_daily_data = daily_data_map.get(symbol)
-
-    for i in range(MAX_PATTERN_LOOKBACK, len(df)):
-        current_candle = df.iloc[i]
-        current_date = current_candle.name.normalize()
-
-        if active_trade:
-            # --- MFE and MAE Tracking ---
-            active_trade['mfe'] = max(active_trade['mfe'], active_trade['entry_price'] - current_candle['low'])
-            active_trade['mae'] = max(active_trade['mae'], current_candle['high'] - active_trade['entry_price'])
-
-            # --- BREAKEVEN STOP LOGIC ---
-            if USE_BREAKEVEN_STOP and not active_trade['be_activated']:
-                if current_candle['low'] <= active_trade['be_trigger_price']:
-                    active_trade['sl'] = active_trade['be_target_price']
-                    active_trade['be_activated'] = True
+    # Get all unique timestamps from all symbols
+    all_timestamps = sorted(list(set(ts for df in all_data_map.values() for ts in df.index)))
+    
+    active_trades = []
+    
+    for current_timestamp in all_timestamps:
+        current_date = current_timestamp.normalize()
+        
+        # --- CHECK AND MANAGE OPEN TRADES FIRST ---
+        trades_to_remove = []
+        for trade in active_trades:
+            symbol = trade['symbol']
             
-            # --- MULTI-STAGE TRAILING STOP ACTIVATION ---
-            if USE_MULTI_STAGE_TS:
-                if active_trade['initial_risk'] > 0:
-                    current_profit_r = (active_trade['entry_price'] - current_candle['low']) / active_trade['initial_risk']
-                    if current_profit_r >= AGGRESSIVE_TS_TRIGGER_R:
-                        active_trade['current_ts_multiplier'] = AGGRESSIVE_TS_MULTIPLIER
+            # Find the candle data for this timestamp
+            df_symbol = all_data_map.get(symbol)
+            if df_symbol is None or current_timestamp not in df_symbol.index:
+                continue
 
-            # --- ATR Trailing Stop Logic ---
-            if USE_ATR_TRAILING_STOP and atr_col in df.columns and pd.notna(current_candle[atr_col]):
-                current_atr = current_candle[atr_col]
-                ts_multiplier = active_trade['current_ts_multiplier']
-                new_trailing_stop = current_candle['low'] + (current_atr * ts_multiplier)
-                active_trade['sl'] = min(active_trade['sl'], new_trailing_stop)
+            current_candle = df_symbol.loc[current_timestamp]
+            np_high = current_candle['high']
+            np_low = current_candle['low']
+            np_close = current_candle['close']
 
-            # --- Exit Logic ---
-            exit_reason, exit_price = None, None
-            if current_candle['high'] >= active_trade['sl']: exit_reason, exit_price = 'SL_HIT', active_trade['sl']
-            elif current_candle['low'] <= active_trade['tp']: exit_reason, exit_price = 'TP_HIT', active_trade['tp']
-            
-            if TRADING_MODE == 'INTRADAY' and current_candle.name.strftime('%H:%M') == EOD_TIME and not exit_reason:
-                exit_reason, exit_price = 'EOD_EXIT', current_candle['close']
-            
-            if exit_reason:
-                active_trade.update({'exit_time': current_candle.name, 'exit_price': exit_price, 'exit_reason': exit_reason, 'pnl': (active_trade['entry_price'] - exit_price)})
-                trades.append(active_trade)
-                active_trade = None
-
-        if not active_trade:
-            # --- DYNAMIC UNIVERSE FILTER CHECK ---
-            if USE_DYNAMIC_UNIVERSE:
-                daily_info = daily_filters.get(current_date)
-                if not daily_info or not daily_info['vix_ok'] or symbol not in daily_info['hotlist']:
+            # --- GAP HANDLING ---
+            # Added a check to prevent KeyError when the index is at the beginning of the DataFrame
+            if current_timestamp > df_symbol.index[0] and current_candle.name.date() != df_symbol.index[df_symbol.index.get_loc(current_timestamp) - 1].date():
+                if trade['direction'] == 'LONG' and np_low <= trade['sl']:
+                    exit_price = min(trade['sl'], np_low) * (1 - SLIPPAGE_BPS / 10000)
+                    pnl = (exit_price - trade['entry_price']) * trade['num_units']
+                    trade_log.append(trade)
+                    trades_to_remove.append(trade)
+                    continue
+                elif trade['direction'] == 'SHORT' and np_high >= trade['sl']:
+                    exit_price = max(trade['sl'], np_high) * (1 + SLIPPAGE_BPS / 10000)
+                    pnl = (trade['entry_price'] - exit_price) * trade['num_units']
+                    trade_log.append(trade)
+                    trades_to_remove.append(trade)
                     continue
 
-            df_slice = df.iloc[i - MAX_PATTERN_LOOKBACK:i]
-            direction, pattern_high, pattern_low = find_trade_setup(df_slice)
+            # --- DYNAMIC TRADE MANAGEMENT LOGIC ---
+            initial_risk = trade['initial_risk']
+            current_profit_r = (np_high - trade['entry_price']) / initial_risk if trade['direction'] == 'LONG' else (trade['entry_price'] - np_low) / initial_risk
 
-            if direction == 'SHORT':
-                # --- ADDITIONAL MVWAP FILTER for Stocks ---
-                if USE_ADDITIONAL_MVWAP_FILTER and not is_index:
-                    mvwap_col = f'mvwap_{MVWAP_PERIOD}'
-                    if mvwap_col not in df.columns or pd.isna(current_candle[mvwap_col]):
-                        continue
-                    if current_candle['close'] > current_candle[mvwap_col]:
-                        continue # Skip if price is above MVWAP
+            # 1. BREAKEVEN STOP
+            if trade['direction'] == 'LONG' and not trade['be_activated'] and np_high >= trade['be_trigger_price']:
+                trade['sl'] = trade['be_target_price']
+                trade['be_activated'] = True
+            elif trade['direction'] == 'SHORT' and not trade['be_activated'] and np_low <= trade['be_trigger_price']:
+                trade['sl'] = trade['be_target_price']
+                trade['be_activated'] = True
+            
+            # 2. MULTI-STAGE TRAILING STOP
+            if trade['initial_risk'] > 0 and trade['current_ts_multiplier'] != trade['aggressive_ts_multiplier'] and current_profit_r >= trade['aggressive_ts_trigger_r']:
+                trade['current_ts_multiplier'] = trade['aggressive_ts_multiplier']
 
-                if current_candle['low'] < pattern_low:
-                    entry_price, sl = pattern_low, pattern_high
-                    initial_risk = sl - entry_price
-                    if initial_risk <= 0: continue
-                    
-                    # --- Log Volatility and RSI at Entry ---
-                    daily_volatility = np.nan
-                    daily_rsi = np.nan
-                    if symbol_daily_data is not None and current_date in symbol_daily_data.index:
-                        daily_stats = symbol_daily_data.loc[current_date]
-                        daily_volatility = daily_stats.get(f'atr_{VOLATILITY_ATR_PERIOD}_pct', np.nan)
-                        daily_rsi = daily_stats.get('rsi_14', np.nan)
+            # 3. ATR Trailing Stop
+            atr_col = f'atr_{trade["atr_ts_period"]}'
+            if atr_col in current_candle and pd.notna(current_candle[atr_col]):
+                current_atr = current_candle[atr_col]
+                ts_multiplier = trade['current_ts_multiplier']
+                
+                if trade['direction'] == 'LONG':
+                    new_trailing_stop = np_high - (current_atr * ts_multiplier)
+                    trade['sl'] = max(trade['sl'], new_trailing_stop)
+                else: # SHORT
+                    new_trailing_stop = np_low + (current_atr * ts_multiplier)
+                    trade['sl'] = min(trade['sl'], new_trailing_stop)
 
-                    tp = entry_price - (initial_risk * RISK_REWARD_RATIO)
-                    active_trade = {
-                        'symbol': symbol, 'direction': 'SHORT', 'entry_time': current_candle.name, 
-                        'entry_price': entry_price, 'sl': sl, 'tp': tp, 'mfe': 0, 'mae': 0,
-                        'initial_risk': initial_risk, 'be_activated': False,
-                        'be_trigger_price': entry_price - (initial_risk * BREAKEVEN_TRIGGER_R),
-                        'be_target_price': entry_price - (initial_risk * BREAKEVEN_PROFIT_R),
-                        'current_ts_multiplier': ATR_TS_MULTIPLIER,
-                        'daily_vol_at_entry': daily_volatility,
-                        'daily_rsi_at_entry': daily_rsi
-                    }
-                    if current_candle['high'] >= sl:
-                        active_trade.update({'exit_time': current_candle.name, 'exit_price': sl, 'exit_reason': 'SL_HIT_ON_ENTRY', 'pnl': entry_price - sl})
-                        trades.append(active_trade)
-                        active_trade = None
-    return trades
+            # --- CHECK FOR EXIT CONDITIONS ---
+            exit_reason, exit_price = None, None
+            if trade['direction'] == 'LONG' and np_low <= trade['sl']:
+                exit_price = trade['sl'] * (1 - SLIPPAGE_BPS / 10000)
+                if trade['sl'] == trade['be_target_price']: exit_reason = 'BE_HIT'
+                else: exit_reason = 'TS_HIT'
+            elif trade['direction'] == 'LONG' and np_high >= trade['tp']:
+                exit_price = trade['tp'] * (1 - SLIPPAGE_BPS / 10000)
+                exit_reason = 'TP_HIT'
+            elif trade['direction'] == 'SHORT' and np_high >= trade['sl']:
+                exit_price = trade['sl'] * (1 + SLIPPAGE_BPS / 10000)
+                if trade['sl'] == trade['be_target_price']: exit_reason = 'BE_HIT'
+                else: exit_reason = 'TS_HIT'
+            elif trade['direction'] == 'SHORT' and np_low <= trade['tp']:
+                exit_price = trade['tp'] * (1 + SLIPPAGE_BPS / 10000)
+                exit_reason = 'TP_HIT'
 
-def calculate_and_log_metrics(all_trades_df, scope_name):
-    """Calculates and logs performance metrics."""
+            # EOD exit for intraday mode
+            if TRADING_MODE == 'INTRADAY' and current_timestamp.strftime('%H:%M') == EOD_TIME and not exit_reason:
+                exit_reason, exit_price = 'EOD_EXIT', np_close
+            
+            if exit_reason:
+                trade['exit_time'] = current_timestamp
+                trade['exit_price'] = exit_price
+                trade['exit_reason'] = exit_reason
+                trade['pnl'] = (trade['exit_price'] - trade['entry_price']) * trade['num_units'] if trade['direction'] == 'LONG' else (trade['entry_price'] - trade['exit_price']) * trade['num_units']
+                trade_log.append(trade)
+                trades_to_remove.append(trade)
+        
+        # Remove exited trades from active list
+        for trade in trades_to_remove:
+            portfolio.update_on_exit(trade, trade['pnl'])
+
+        # --- LOOK FOR NEW SIGNALS (OPTIMIZED) ---
+        # Instead of looping through all symbols, we do a quick lookup
+        # in our pre-computed map of signals for the current timestamp.
+        if current_timestamp in signals_by_timestamp:
+            active_symbols = {t['symbol'] for t in active_trades} # Fast lookup set
+            for signal in signals_by_timestamp[current_timestamp]:
+                symbol = signal['symbol']
+                if symbol in active_symbols:
+                    continue
+                
+                # Check for the existence of the current candle for this symbol
+                df_symbol = all_data_map.get(symbol)
+                if df_symbol is None or current_timestamp not in df_symbol.index:
+                    continue
+                
+                current_candle = df_symbol.loc[current_timestamp]
+            
+                # --- Check for Long Signal ---
+                if signal['direction'] == 'LONG':
+                    if current_candle['daily_rsi'] > LONGS_RSI_THRESHOLD and current_candle['close'] > current_candle['daily_ema_50']:
+                        pattern_high = current_candle['pattern_high_long']
+                        pattern_low = current_candle['pattern_low_long']
+                        if current_candle['high'] > pattern_high:
+                            entry_price = pattern_high * (1 + SLIPPAGE_BPS / 10000)
+                            sl = pattern_low
+                            initial_risk_per_unit = entry_price - sl
+                            if initial_risk_per_unit <= 0: continue
+                            
+                            num_units, risk_value = calculate_position_size(portfolio.risk_per_trade_value, initial_risk_per_unit)
+                            if num_units > 0:
+                                trade = {
+                                    'symbol': symbol, 'direction': 'LONG', 'entry_time': current_timestamp, 
+                                    'entry_price': entry_price, 'sl': sl, 'tp': entry_price + (initial_risk_per_unit * RISK_REWARD_RATIO),
+                                    'initial_risk': initial_risk_per_unit, 'be_activated': False, 'be_trigger_price': entry_price + (initial_risk_per_unit * LONGS_BREAKEVEN_TRIGGER_R),
+                                    'be_target_price': entry_price + (initial_risk_per_unit * LONGS_BREAKEVEN_PROFIT_R),
+                                    'aggressive_ts_trigger_r': LONGS_AGGRESSIVE_TS_TRIGGER_R, 'aggressive_ts_multiplier': LONGS_AGGRESSIVE_TS_MULTIPLIER,
+                                    'atr_ts_period': 14, 'current_ts_multiplier': LONGS_ATR_TS_MULTIPLIER, 'num_units': num_units, 'risk_value': risk_value,
+                                    'cost': entry_price * num_units
+                                }
+                                is_added, reason = portfolio.check_and_add_trade(trade)
+                                if is_added: active_trades.append(trade)
+                                else: rejected_log.append(trade)
+
+                # --- Check for Short Signal ---
+                if signal['direction'] == 'SHORT':
+                    if current_candle['daily_rsi'] < SHORTS_RSI_THRESHOLD and current_candle['close'] < current_candle['daily_ema_50']:
+                        pattern_high = current_candle['pattern_high_short']
+                        pattern_low = current_candle['pattern_low_short']
+                        if current_candle['low'] < pattern_low:
+                            entry_price = pattern_low * (1 - SLIPPAGE_BPS / 10000)
+                            sl = pattern_high
+                            initial_risk_per_unit = sl - entry_price
+                            if initial_risk_per_unit <= 0: continue
+                            
+                            num_units, risk_value = calculate_position_size(portfolio.risk_per_trade_value, initial_risk_per_unit)
+                            if num_units > 0:
+                                trade = {
+                                    'symbol': symbol, 'direction': 'SHORT', 'entry_time': current_timestamp, 
+                                    'entry_price': entry_price, 'sl': sl, 'tp': entry_price - (initial_risk_per_unit * RISK_REWARD_RATIO),
+                                    'initial_risk': initial_risk_per_unit, 'be_activated': False, 'be_trigger_price': entry_price - (initial_risk_per_unit * SHORTS_BREAKEVEN_TRIGGER_R),
+                                    'be_target_price': entry_price - (initial_risk_per_unit * SHORTS_BREAKEVEN_PROFIT_R),
+                                    'aggressive_ts_trigger_r': SHORTS_AGGRESSIVE_TS_TRIGGER_R, 'aggressive_ts_multiplier': SHORTS_AGGRESSIVE_TS_MULTIPLIER,
+                                    'atr_ts_period': 14, 'current_ts_multiplier': SHORTS_ATR_TS_MULTIPLIER, 'num_units': num_units, 'risk_value': risk_value,
+                                    'cost': entry_price * num_units
+                                }
+                                is_added, reason = portfolio.check_and_add_trade(trade)
+                                if is_added: active_trades.append(trade)
+                                else: rejected_log.append(trade)
+
+
+def calculate_and_log_metrics(all_trades_df, scope_name, initial_capital, log_dir):
+    """Calculates and logs comprehensive performance metrics."""
     if all_trades_df.empty:
         logging.info(f"No trades executed for {scope_name}.")
         return
-    logging.info(f"\n--- Performance Metrics for {scope_name} ---")
+
+    # Basic Metrics
     total_trades = len(all_trades_df)
     wins = all_trades_df[all_trades_df['pnl'] > 0]
+    losses = all_trades_df[all_trades_df['pnl'] <= 0]
     win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
     gross_profit = wins['pnl'].sum()
-    gross_loss = all_trades_df[all_trades_df['pnl'] <= 0]['pnl'].sum()
+    gross_loss = losses['pnl'].sum()
+    net_pnl = all_trades_df['pnl'].sum()
     profit_factor = abs(gross_profit / gross_loss) if gross_loss != 0 else float('inf')
-    logging.info(f"Total Trades: {total_trades}, Win Rate: {win_rate:.2f}%, Profit Factor: {profit_factor:.2f}, Net PnL: {all_trades_df['pnl'].sum():.2f}")
+    
+    # Portfolio Metrics (Simplified)
+    all_trades_df.set_index('exit_time', inplace=True)
+    all_trades_df.sort_index(inplace=True)
+    equity_curve = initial_capital + all_trades_df['pnl'].cumsum()
+    peak = equity_curve.expanding().max()
+    drawdown = (equity_curve - peak) / peak
+    max_drawdown = drawdown.min()
+    
+    # Log the summary
+    logging.info(f"\n--- Performance Metrics for {scope_name} ---")
+    logging.info(f"Total Trades: {total_trades}")
+    logging.info(f"Win Rate: {win_rate:.2f}%")
+    logging.info(f"Profit Factor: {profit_factor:.2f}")
+    logging.info(f"Net PnL: {net_pnl:,.2f}")
+    logging.info(f"Max Drawdown: {max_drawdown:.2%}")
+    logging.info(f"Final Capital: {equity_curve.iloc[-1]:,.2f}")
 
-def process_symbol_backtest(symbol, daily_filters, daily_data_map):
-    """A wrapper function to run the backtest for a single symbol."""
-    tz = timezone('Asia/Kolkata')
-    start_dt = tz.localize(datetime.datetime.strptime(START_DATE, '%Y-%m-%d'))
-    end_dt = tz.localize(datetime.datetime.strptime(END_DATE, '%Y-%m-%d')) + datetime.timedelta(days=1)
+    # Save metrics to a file if needed
+    metrics_file = os.path.join(log_dir, 'metrics.txt')
+    with open(metrics_file, 'a') as f:
+        f.write(f"\n--- {scope_name} ---\n")
+        f.write(f"Total Trades: {total_trades}\n")
+        f.write(f"Win Rate: {win_rate:.2f}%\n")
+        f.write(f"Profit Factor: {profit_factor:.2f}\n")
+        f.write(f"Net PnL: {net_pnl:,.2f}\n")
+        f.write(f"Max Drawdown: {max_drawdown:.2%}\n")
+        f.write(f"Final Capital: {equity_curve.iloc[-1]:,.2f}\n")
 
-    data_path = os.path.join(DATA_DIRECTORY_15MIN, f"{symbol}_15min_with_indicators.parquet")
-    if not os.path.exists(data_path):
-        print(f"Data file not found for {symbol}. Skipping.")
-        return None
-
-    try:
-        df = pd.read_parquet(data_path)
-        df.index = df.index.tz_localize(tz)
-        df_filtered = df[(df.index >= start_dt) & (df.index < end_dt)].copy()
-        if df_filtered.empty: return None
-
-        print(f"Processing symbol: {symbol}...")
-        trades = run_backtest(df_filtered, symbol, daily_filters, daily_data_map)
-        
-        if trades: return pd.DataFrame(trades)
-        return None
-    except Exception as e:
-        print(f"An error occurred while processing {symbol}: {e}")
-        return None
 
 def main():
     """Main function to orchestrate the backtesting process."""
@@ -271,103 +372,129 @@ def main():
     setup_logging(log_dir)
     log_configs()
 
+    # --- LOAD SYMBOLS & DATA ---
+    symbols_to_trade = []
     try:
         symbols_df = pd.read_csv(SYMBOL_LIST_PATH)
         symbols_from_csv = symbols_df['symbol'].tolist()
+        symbols_to_trade = sorted(list(set(symbols_from_csv + ADDITIONAL_SYMBOLS)))
     except FileNotFoundError:
-        logging.warning(f"Symbol list file not found at: {SYMBOL_LIST_PATH}.")
-        symbols_from_csv = []
-
-    # Define the symbols we will actually run the backtest on
-    symbols_to_trade = sorted(list(set(symbols_from_csv + ADDITIONAL_SYMBOLS)))
+        logging.warning(f"Symbol list file not found. Running on indices only.")
+        symbols_to_trade = sorted(ADDITIONAL_SYMBOLS)
     
-    # Define the complete set of symbols for which we need to load data.
-    # This includes tradable symbols plus any symbols needed for filters (like VIX).
-    symbols_to_load = set(symbols_to_trade)
-    if USE_DYNAMIC_UNIVERSE:
-        symbols_to_load.add(VIX_SYMBOL)
+    logging.info(f"Total symbols in universe: {len(symbols_to_trade)}")
     
-    all_symbols_to_load = sorted(list(symbols_to_load))
+    all_data_map = {}
+    logging.info("Pre-loading and processing all data...")
+    all_timestamps = set()
+    signals_by_timestamp = defaultdict(list)
     
-    logging.info(f"Total symbols to run backtest on: {len(symbols_to_trade)}")
-    logging.info(f"Total unique symbols to load data for: {len(all_symbols_to_load)}")
-    
-    # --- PRE-CALCULATE DAILY FILTERS AND DATA ---
-    daily_filters = {}
-    daily_data_map = {}
-    
-    logging.info("Pre-loading all daily data for analysis...")
-    tz = timezone('Asia/Kolkata')
-    for symbol in all_symbols_to_load:
+    for symbol in symbols_to_trade:
         daily_path = os.path.join(DATA_DIRECTORY_DAILY, f"{symbol}_daily_with_indicators.parquet")
-        if os.path.exists(daily_path):
+        min_path = os.path.join(DATA_DIRECTORY_15MIN, f"{symbol}_15min_with_indicators.parquet")
+        
+        if not os.path.exists(daily_path) or not os.path.exists(min_path):
+            continue
+
+        try:
             df_daily = pd.read_parquet(daily_path)
-            # --- DEFINITIVE FIX: Make daily data timezone-aware ---
-            df_daily.index = df_daily.index.tz_localize(tz)
-            df_daily.index = df_daily.index.normalize()
-            daily_data_map[symbol] = df_daily
+            df_15min = pd.read_parquet(min_path)
 
-    if USE_DYNAMIC_UNIVERSE:
-        logging.info("Pre-calculating daily filters for dynamic universe...")
-        vix_df = daily_data_map.get(VIX_SYMBOL)
-        if vix_df is None:
-            logging.error(f"FATAL: VIX data not found for symbol '{VIX_SYMBOL}' in the 'daily' directory.")
-            logging.error("Dynamic universe filter cannot run without VIX data. Exiting.")
-            sys.exit(1)
-        
-        vix_ok_series = vix_df['close'] > VIX_THRESHOLD
-        
-        atr_col = f'atr_{VOLATILITY_ATR_PERIOD}_pct'
-        all_volatility = {s: d[atr_col] for s, d in daily_data_map.items() if atr_col in d.columns}
-        
-        volatility_df = pd.DataFrame(all_volatility)
-        daily_thresholds = volatility_df.quantile(VOLATILITY_UNIVERSE_PERCENTILE, axis=1)
-
-        for date in vix_ok_series.index:
-            vix_ok = vix_ok_series.get(date, False)
-            hotlist = set()
-            if vix_ok:
-                threshold = daily_thresholds.get(date)
-                if pd.notna(threshold):
-                    daily_vols = volatility_df.loc[date].dropna()
-                    hotlist = set(daily_vols[daily_vols > threshold].index)
+            # --- Data Cleaning (Crucial Fix for 'Merge keys contain null values') ---
+            df_daily = df_daily.loc[df_daily.index.notna()].copy()
+            df_15min = df_15min.loc[df_15min.index.notna()].copy()
             
-            daily_filters[date] = {'vix_ok': vix_ok, 'hotlist': hotlist}
-        logging.info("Daily filters calculated.")
+            # --- Merge Daily Data into 15-Min Dataframe for Filters ---
+            df_daily.index = pd.to_datetime(df_daily.index)
+            df_15min.index = pd.to_datetime(df_15min.index)
+            df_daily = df_daily.rename(columns={'rsi_14': 'daily_rsi'})
+            
+            # Use merge_asof to align daily data with 15-minute data without lookahead bias
+            df_15min = pd.merge_asof(
+                df_15min.sort_index(),
+                df_daily[['daily_rsi']],
+                left_index=True,
+                right_index=True,
+                direction='backward'
+            )
+            df_15min = pd.merge_asof(
+                df_15min.sort_index(),
+                df_daily[['ema_50']].rename(columns={'ema_50': 'daily_ema_50'}),
+                left_index=True,
+                right_index=True,
+                direction='backward'
+            )
 
+            # Pre-calculate signals
+            is_red = df_15min['close'] < df_15min['open']
+            is_green = df_15min['close'] > df_15min['open']
 
-    # --- PARALLEL EXECUTION ---
-    num_processes = max(1, cpu_count() - 1)
-    logging.info(f"Starting parallel backtest with {num_processes} workers...")
+            # Long pattern
+            red_blocks = (is_red != is_red.shift()).cumsum()
+            consecutive_reds = is_red.groupby(red_blocks).cumsum()
+            consecutive_reds[~is_red] = 0
+            num_red_candles_prev = consecutive_reds.shift(1).fillna(0)
+            is_signal_candle_long = (is_green & (num_red_candles_prev >= MIN_CONSECUTIVE_CANDLES) & (num_red_candles_prev <= MAX_PATTERN_LOOKBACK - 1))
+            df_15min['trade_trigger_long'] = is_signal_candle_long.shift(1).fillna(False)
+            df_15min['pattern_len_long'] = (num_red_candles_prev + 1).shift(1).fillna(0)
+            
+            # Short pattern
+            green_blocks = (is_green != is_green.shift()).cumsum()
+            consecutive_greens = is_green.groupby(green_blocks).cumsum()
+            consecutive_greens[~is_green] = 0
+            num_green_candles_prev = consecutive_greens.shift(1).fillna(0)
+            is_signal_candle_short = (is_red & (num_green_candles_prev >= MIN_CONSECUTIVE_CANDLES) & (num_green_candles_prev <= MAX_PATTERN_LOOKBACK - 1))
+            df_15min['trade_trigger_short'] = is_signal_candle_short.shift(1).fillna(False)
+            df_15min['pattern_len_short'] = (num_green_candles_prev + 1).shift(1).fillna(0)
+            
+            # --- OPTIMIZATION: Populate the signal map ---
+            long_triggers = df_15min.index[df_15min['trade_trigger_long']]
+            for ts in long_triggers:
+                signals_by_timestamp[ts].append({'symbol': symbol, 'direction': 'LONG'})
+            short_triggers = df_15min.index[df_15min['trade_trigger_short']]
+            for ts in short_triggers:
+                signals_by_timestamp[ts].append({'symbol': symbol, 'direction': 'SHORT'})
 
-    pool = Pool(processes=num_processes)
-    try:
-        worker_func = partial(process_symbol_backtest, daily_filters=daily_filters, daily_data_map=daily_data_map)
-        results = pool.map(worker_func, symbols_to_trade)
-    except KeyboardInterrupt:
-        logging.warning("\n--- Process interrupted by user (Ctrl+C). Shutting down workers. ---")
-        pool.terminate()
-        pool.join()
-        sys.exit(1)
-    finally:
-        pool.close()
-        pool.join()
+            # Store patterns
+            df_15min['pattern_high_long'] = df_15min['high'].rolling(MAX_PATTERN_LOOKBACK).max().shift(1)
+            df_15min['pattern_low_long'] = df_15min['low'].rolling(MAX_PATTERN_LOOKBACK).min().shift(1)
+            df_15min['pattern_high_short'] = df_15min['high'].rolling(MAX_PATTERN_LOOKBACK).max().shift(1)
+            df_15min['pattern_low_short'] = df_15min['low'].rolling(MAX_PATTERN_LOOKBACK).min().shift(1)
+            
+            # Filter and add to map
+            df_15min = df_15min[(df_15min.index >= START_DATE) & (df_15min.index < END_DATE)].copy()
+            df_15min.dropna(inplace=True)
+            all_data_map[symbol] = df_15min
+        except Exception as e:
+            logging.warning(f"Error loading or processing data for {symbol}: {e}")
+            continue
     
-    all_symbols_trades = [res for res in results if res is not None]
+    # --- RUN SIMULATION ---
+    # The generation of all_timestamps is moved here to ensure it only includes
+    # timestamps that exist in the loaded data.
+    all_timestamps = sorted(list(set(ts for df in all_data_map.values() for ts in df.index)))
+    
+    logging.info(f"Starting simulation on {len(all_data_map)} symbols...")
+    portfolio = PortfolioManager(INITIAL_CAPITAL, RISK_PER_TRADE_PCT, MAX_PORTFOLIO_RISK_PCT)
+    trade_log = []
+    rejected_log = []
+    
+    run_simulation(all_data_map, portfolio, trade_log, rejected_log, signals_by_timestamp)
+    
+    # --- FINAL LOGGING & SUMMARY ---
+    final_trade_df = pd.DataFrame(trade_log)
+    rejected_df = pd.DataFrame(rejected_log)
 
-    if all_symbols_trades:
-        for trades_df in all_symbols_trades:
-            symbol_name = trades_df['symbol'].iloc[0]
-            calculate_and_log_metrics(trades_df, symbol_name)
+    trade_log_path = os.path.join(log_dir, 'trade_log.csv')
+    final_trade_df.to_csv(trade_log_path, index=False)
 
-        final_trades_df = pd.concat(all_symbols_trades, ignore_index=True)
-        trade_log_path = os.path.join(log_dir, 'trade_log.csv')
-        final_trades_df.to_csv(trade_log_path, index=False)
-        logging.info(f"\n--- Overall Backtest Summary ---")
-        calculate_and_log_metrics(final_trades_df, "ALL_SYMBOLS_COMBINED")
-        logging.info(f"Full trade log saved to: {trade_log_path}")
-    else:
-        logging.info("No trades were executed across any symbols in the specified date range.")
+    rejected_log_path = os.path.join(log_dir, 'rejected_trades.csv')
+    rejected_df.to_csv(rejected_log_path, index=False)
+
+    logging.info("\n--- Overall Backtest Summary ---")
+    calculate_and_log_metrics(final_trade_df, "ALL_SYMBOLS_COMBINED", INITIAL_CAPITAL, log_dir)
+    logging.info(f"Full trade log saved to: {trade_log_path}")
+    logging.info(f"Rejected trades log saved to: {rejected_log_path}")
     logging.info("--- Backtest Simulation Finished ---")
 
 if __name__ == "__main__":
