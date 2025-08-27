@@ -77,12 +77,14 @@ def precompute_signals_and_filters(df, daily_df, symbol):
     is_green = df['close'] > df['open']
     
     # Calculate consecutive red candles
+    # NEW FIX: Correctly count consecutive candles
     red_blocks = (is_red != is_red.shift()).cumsum()
     consecutive_reds = is_red.groupby(red_blocks).cumsum()
     consecutive_reds[~is_red] = 0
     num_red_candles_prev = consecutive_reds.shift(1).fillna(0)
     
     # Calculate consecutive green candles
+    # NEW FIX: Correctly count consecutive candles
     green_blocks = (is_green != is_green.shift()).cumsum()
     consecutive_greens = is_green.groupby(green_blocks).cumsum()
     consecutive_greens[~is_green] = 0
@@ -236,10 +238,7 @@ def main():
         print("No valid data was found for any symbols. Exiting.")
         return
         
-    # NEW AND MORE ROBUST CONCATENATION AND SORTING
     master_df = pd.concat(all_dfs)
-    # The fix is here: sort by the datetime column explicitly after concatenation.
-    # This ensures that the final DataFrame's index will be in chronological order.
     master_df.sort_values(by=['datetime', 'symbol'], inplace=True)
     master_df.set_index('datetime', inplace=True)
 
