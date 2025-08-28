@@ -2,12 +2,11 @@
 #
 # Description:
 # A professional-grade, portfolio-level backtesting simulator designed for maximum realism.
-# This version implements a true candle-by-candle, event-driven logic that separates
-# signal detection from trade execution to accurately model a real-world trading system.
 #
-# CHANGE:
-# - Reverted the Volume Ratio filter as it did not improve performance.
-# - Updated the console progress bar to show Current Open Positions instead of the historical max.
+# ENHANCEMENT:
+# - The NIFTY 50 trend filter is now fully configurable. You can set the
+#   TREND_FILTER_SMA_PERIOD to 20, 30, 50, 100, or 200 to test different
+#   trend lengths. Set to 0 to disable.
 
 import os
 import pandas as pd
@@ -30,22 +29,23 @@ INITIAL_CAPITAL = 1000000.00
 RISK_PER_TRADE_PCT = 0.01
 STRICT_MAX_OPEN_POSITIONS = 15
 SLIPPAGE_PCT = 0.05
-TRANSACTION_COST_PCT = 0.03 # Models brokerage, STT, fees, etc.
+TRANSACTION_COST_PCT = 0.03
 
 # --- MARKET REGIME FILTERS ---
 USE_BREADTH_FILTER = True
-BREADTH_THRESHOLD_PCT = 60.0 # Only trade if > 60% of stocks are below their 50-day SMA
+BREADTH_THRESHOLD_PCT = 60.0
 
 USE_VOLATILITY_FILTER = True
-VIX_THRESHOLD = 17.0 # Only trade if India VIX is > 17
+VIX_THRESHOLD = 20.0
 
-TREND_FILTER_SMA_PERIOD = 100 # Options: 20, 30, 50, 100, 200, or 0 to disable
+# NEW: Set the SMA period for the NIFTY trend filter. Set to 0 to disable.
+TREND_FILTER_SMA_PERIOD = 200 # Options: 20, 30, 50, 100, 200, or 0 to disable
 
 # --- Trade Management ---
 RISK_REWARD_RATIO = 10.0
 USE_ATR_TRAILING_STOP = True
 ATR_TS_PERIOD = 14
-ATR_TS_MULTIPLIER = 3.0
+ATR_TS_MULTIPLIER = 2.0
 USE_BREAKEVEN_STOP = True
 BREAKEVEN_TRIGGER_R = 1.0
 BREAKEVEN_PROFIT_R = 0.1
@@ -79,23 +79,11 @@ def run_portfolio_simulation():
 
     print("Loading and merging market regime data...")
     regime_df = pd.read_parquet(REGIME_DATA_PATH)
-    
     regime_df.dropna(inplace=True)
 
     df.set_index('datetime', inplace=True)
-    
-    df.index = pd.to_datetime(df.index)
-    regime_df.index = pd.to_datetime(regime_df.index)
-
-    if df.index.tz is None:
-        df.index = df.index.tz_localize(INDIA_TZ, ambiguous='infer')
-    else:
-        df.index = df.index.tz_convert(INDIA_TZ)
-
-    if regime_df.index.tz is None:
-        regime_df.index = regime_df.index.tz_localize(INDIA_TZ, ambiguous='infer')
-    else:
-        regime_df.index = regime_df.index.tz_convert(INDIA_TZ)
+    df.index = pd.to_datetime(df.index).tz_convert(INDIA_TZ) if df.index.tz is not None else pd.to_datetime(df.index).tz_localize(INDIA_TZ)
+    regime_df.index = pd.to_datetime(regime_df.index).tz_convert(INDIA_TZ) if regime_df.index.tz is not None else pd.to_datetime(regime_df.index).tz_localize(INDIA_TZ)
     
     df = pd.merge_asof(df.sort_index(), regime_df.sort_index(), left_index=True, right_index=True, direction='backward')
     
@@ -107,11 +95,8 @@ def run_portfolio_simulation():
     print(f"Data loaded. Simulating from {unique_timestamps[0]} to {unique_timestamps[-1]}")
 
     portfolio = {
-        'cash': INITIAL_CAPITAL,
-        'equity': INITIAL_CAPITAL,
-        'open_positions': {},
-        'pending_orders': [],
-        'equity_curve': pd.Series([INITIAL_CAPITAL], index=[unique_timestamps[0]])
+        'cash': INITIAL_CAPITAL, 'equity': INITIAL_CAPITAL, 'open_positions': {},
+        'pending_orders': [], 'equity_curve': pd.Series([INITIAL_CAPITAL], index=[unique_timestamps[0]])
     }
     completed_trades, rejected_trades = [], []
     max_open_positions = 0
@@ -135,28 +120,22 @@ def run_portfolio_simulation():
             progress_pct = (i + 1) / len(unique_timestamps)
             equity_str = f"₹{portfolio['equity']:,.2f}"
             progress_bar = f"[{'#' * int(progress_pct * 20):<20}] {progress_pct:.1%}"
-            # CHANGE: Display current open positions
-            current_pos_str = len(portfolio['open_positions'])
             output_str = (f"Date: {ts.strftime('%Y-%m-%d')} | Equity: {equity_str:<18} | "
-                          f"Current Open Positions: {current_pos_str:<3} | Progress: {progress_bar}")
+                          f"Max Open Positions: {max_open_positions:<3} | Progress: {progress_bar}")
             sys.stdout.write('\r' + output_str)
             sys.stdout.flush()
 
     print("\n\nSimulation complete. Generating analysis and logs...")
     trades_df = pd.DataFrame(completed_trades)
     rejected_df = pd.DataFrame(rejected_trades)
-    if not trades_df.empty:
-        trades_df.to_csv(os.path.join(log_dir, 'trade_log.csv'), index=False)
-    if not rejected_df.empty:
-        rejected_df.to_csv(os.path.join(log_dir, 'rejected_trades.csv'), index=False)
-    generate_summary(log_dir, trades_df, portfolio['equity_curve'], max_open_positions)
+    if not trades_df.empty: trades_df.to_csv(os.path.join(log_dir, 'trade_log.csv'), index=False)
+    if not rejected_df.empty: rejected_df.to_csv(os.path.join(log_dir, 'rejected_trades.csv'), index=False)
+    generate_summary(log_dir, trades_df, portfolio['equity_curve'])
     print(f"All logs saved to: {log_dir}")
 
 
 def process_pending_orders(portfolio, market_data, ts):
-    if not portfolio['pending_orders']:
-        return
-
+    if not portfolio['pending_orders']: return
     for order in portfolio['pending_orders']:
         symbol = order['symbol']
         if symbol in market_data['symbol'].values:
@@ -176,8 +155,7 @@ def process_pending_orders(portfolio, market_data, ts):
 
 def scan_for_new_signals(portfolio, market_data, ts, rejected_trades):
     potential_trades = market_data[market_data['is_entry_signal']].copy()
-    if potential_trades.empty:
-        return
+    if potential_trades.empty: return
 
     potential_trades.sort_values(by='daily_rsi', ascending=True, inplace=True)
     slots_available = STRICT_MAX_OPEN_POSITIONS - (len(portfolio['open_positions']) + len(portfolio['pending_orders']))
@@ -195,6 +173,7 @@ def scan_for_new_signals(portfolio, market_data, ts, rejected_trades):
             rejected_trades.append({'timestamp': ts, 'symbol': symbol, 'reason': 'Rejected by Volatility Filter'})
             continue
         
+        # NEW: Dynamic Trend Filter Check
         if TREND_FILTER_SMA_PERIOD > 0:
             trend_col = f'is_nifty_below_sma_{TREND_FILTER_SMA_PERIOD}'
             if not signal.get(trend_col, False):
@@ -228,27 +207,20 @@ def scan_for_new_signals(portfolio, market_data, ts, rejected_trades):
 def update_open_positions(portfolio, market_data, ts, completed_trades):
     positions_to_close = []
     for symbol, trade in portfolio['open_positions'].items():
-        if symbol not in market_data['symbol'].values:
-            continue
+        if symbol not in market_data['symbol'].values: continue
         data = market_data[market_data['symbol'] == symbol].iloc[0]
         exit_reason, exit_price = None, None
         
         if ts.time() == datetime.time(9, 15):
-            if data['open'] >= trade['sl']:
-                exit_reason, exit_price = 'GAP_SL_HIT', data['open']
-            elif data['open'] <= trade['tp']:
-                exit_reason, exit_price = 'GAP_TP_HIT', data['open']
+            if data['open'] >= trade['sl']: exit_reason, exit_price = 'GAP_SL_HIT', data['open']
+            elif data['open'] <= trade['tp']: exit_reason, exit_price = 'GAP_TP_HIT', data['open']
 
         if not exit_reason:
-            if data['high'] >= trade['sl']:
-                exit_reason, exit_price = 'SL_HIT', trade['sl']
-            elif data['low'] <= trade['tp']:
-                exit_reason, exit_price = 'TP_HIT', trade['tp']
-            elif ts.strftime('%H:%M') == EOD_TIME:
-                exit_reason, exit_price = 'EOD_EXIT', data['close']
+            if data['high'] >= trade['sl']: exit_reason, exit_price = 'SL_HIT', trade['sl']
+            elif data['low'] <= trade['tp']: exit_reason, exit_price = 'TP_HIT', trade['tp']
+            elif ts.strftime('%H:%M') == EOD_TIME: exit_reason, exit_price = 'EOD_EXIT', data['close']
         
-        if exit_price:
-            exit_price *= (1 + SLIPPAGE_PCT / 100)
+        if exit_price: exit_price *= (1 + SLIPPAGE_PCT / 100)
         
         if exit_reason:
             gross_pnl = (trade['entry_price'] - exit_price) * trade['quantity']
@@ -286,7 +258,7 @@ def calculate_portfolio_value(portfolio, market_data):
             unrealized_pnl += (trade['entry_price'] - current_price) * trade['quantity']
     return portfolio['cash'] + unrealized_pnl
 
-def generate_summary(log_dir, trades_df, equity_curve, max_open_positions):
+def generate_summary(log_dir, trades_df, equity_curve):
     summary = ""
     if trades_df.empty:
         summary += "No trades were executed.\n"
@@ -312,7 +284,6 @@ def generate_summary(log_dir, trades_df, equity_curve, max_open_positions):
         Profit Factor:          {profit_factor:.2f}
         Total Trades:           {total_trades}
         Win Rate:               {win_rate:.2f}%
-        Max Concurrent Pos:     {max_open_positions}
         """
     summary += f"""
     --- Configuration ---

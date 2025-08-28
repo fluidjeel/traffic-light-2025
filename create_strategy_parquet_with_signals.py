@@ -17,6 +17,7 @@
 # - Corrected a KeyError by ensuring the 'symbol' column is kept for partitioning.
 # - Added dropna() after merging dataframes to remove rows with null values
 #   that were causing the verification step to fail.
+# - ADDITIVE CHANGE: Included 'volume_ratio' for analysis without removing other features.
 
 import os
 import pandas as pd
@@ -59,7 +60,8 @@ REQUIRED_15MIN_COLS = [
     'open', 'high', 'low', 'close',
     'atr_14',
     f'mvwap_{MVWAP_PERIOD}',
-    f'ema_{INDEX_EMA_PERIOD}'
+    f'ema_{INDEX_EMA_PERIOD}',
+    'volume_ratio' # ADDED FOR ANALYSIS
 ]
 REQUIRED_DAILY_COLS = ['rsi_14', 'atr_14_pct']
 
@@ -160,7 +162,7 @@ def verify_and_sample_data(parquet_path):
             print("❌ VERIFICATION FAILED: The DataFrame is empty.")
             return
 
-        required_cols = {'symbol', 'is_entry_signal', 'daily_rsi', 'close'}
+        required_cols = {'symbol', 'is_entry_signal', 'daily_rsi', 'close', 'volume_ratio'}
         if not required_cols.issubset(df.columns):
             print(f"❌ VERIFICATION FAILED: Missing one or more required columns. Found: {list(df.columns)}")
             return
@@ -289,7 +291,7 @@ def main():
     final_cols_to_keep = [
         'open', 'high', 'low', 'close', 'atr_14', f'mvwap_{MVWAP_PERIOD}',
         f'ema_{INDEX_EMA_PERIOD}', 'daily_rsi', 'daily_vol_pct', 'is_entry_signal',
-        'symbol'
+        'volume_ratio', 'symbol'
     ]
     # Filter the DataFrame, keeping only the essential columns plus the 'symbol' for partitioning.
     # The helper columns from signal calculation are now dropped.
