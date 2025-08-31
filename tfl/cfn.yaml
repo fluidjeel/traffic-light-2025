@@ -1,0 +1,297 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Master CloudFormation template for the TrafficLight-Manny (TFL) automated
+  trading system. This stack provisions all necessary AWS resources, including
+  IAM roles, a DynamoDB table, an EC2 instance with a self-configuring startup
+  script, and serverless components for automation and monitoring.
+
+# ==============================================================================
+# --- PARAMETERS ---
+# These are inputs you can provide when you launch the stack.
+# ==============================================================================
+Parameters:
+  InstanceTypeParameter:
+    Type: String
+    Default: t3.large
+    Description: EC2 instance type for the main trading application. t3.large is recommended for its memory.
+  MyIPAddress:
+    Type: String
+    Description: Your personal IP address (in CIDR notation, e.g., 103.55.21.11/32) to allow SSH access.
+  SSHKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of your existing EC2 KeyPair to allow SSH access to the instance.
+
+# ==============================================================================
+# --- RESOURCES ---
+# This section defines every AWS component that will be created.
+# ==============================================================================
+Resources:
+  # --- 1. NETWORKING & SECURITY ---
+  TradingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: TFL-VPC
+
+  TradingSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TradingVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ] # Use the first AZ in the region
+      Tags:
+        - Key: Name
+          Value: TFL-Public-Subnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: TFL-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TradingVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TradingVPC
+      Tags:
+        - Key: Name
+          Value: TFL-Route-Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TradingSubnet
+      RouteTableId: !Ref RouteTable
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Firewall for the TFL trading EC2 instance
+      VpcId: !Ref TradingVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIPAddress # Allow SSH only from your IP
+      Tags:
+        - Key: Name
+          Value: TFL-SG
+
+  # --- 2. IAM ROLES & PERMISSIONS ---
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: TFL-EC2-Permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - secretsmanager:GetSecretValue
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*" # For production, scope these down to specific resource ARNs
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref EC2InstanceRole
+
+  EventBridgeSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TFL-Scheduler-EC2-StartStop
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TradingEC2}"
+
+  # --- 3. CORE COMPUTE (EC2 INSTANCE) ---
+  TradingEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceTypeParameter
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !Ref SSHKeyName
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref TradingSubnet
+      Tags:
+        - Key: Name
+          Value: TFL-Trading-Server
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -ex
+          # Update the instance and install necessary packages
+          yum update -y
+          yum install -y python3 python3-pip git
+          
+          # Install Python libraries required by the trading application
+          pip3 install pandas pytz boto3 fyers-api fyers-api-helper pandas-ta
+          
+          # Install and configure the AWS CloudWatch Agent for logging
+          yum install -y amazon-cloudwatch-agent
+          cat <<EOF > /opt/aws/amazon-cloudwatch-agent/bin/config.json
+          {
+            "agent": { "run_as_user": "root" },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/tfl_trader.log",
+                      "log_group_name": "${CloudWatchLogGroup}",
+                      "log_stream_name": "{instance_id}"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
+          
+          # Placeholder for cloning your trading script from a git repository
+          # cd /home/ec2-user
+          # git clone https://your-git-repo/tfl.git
+          
+          echo "EC2 instance setup complete."
+
+  # --- 4. CONFIGURATION & DATABASE ---
+  FyersCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: tfl/fyers_credentials
+      Description: Stores the API credentials for the FYERS trading account.
+      SecretString: '{"client_id": "YOUR-CLIENT-ID", "secret_key": "YOUR-SECRET-KEY", "redirect_uri": "https://localhost"}'
+
+  TradingBiasParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /tfl/trading_bias
+      Type: String
+      Value: NO_TRADES
+      Description: The daily trading bias (LONGS_ONLY, SHORTS_ONLY, NO_TRADES).
+
+  TradesDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TFL_Trades
+      AttributeDefinitions:
+        - AttributeName: trade_id
+          AttributeType: S
+        - AttributeName: timestamp_utc
+          AttributeType: S
+      KeySchema:
+        - AttributeName: trade_id
+          KeyType: HASH # Partition Key
+        - AttributeName: timestamp_utc
+          KeyType: RANGE # Sort Key
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Name
+          Value: TFL-Trades-Table
+
+  # --- 5. AUTOMATION & MONITORING ---
+  StartEC2Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: Start-TFL-EC2-Daily
+      Description: Starts the trading server at 9:00 AM IST (3:30 AM UTC) on weekdays.
+      ScheduleExpression: "cron(30 3 ? * MON-FRI *)"
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:aws:scheduler:::aws-sdk:ec2:startInstances"
+        RoleArn: !GetAtt EventBridgeSchedulerRole.Arn
+        Input: !Sub '{"InstanceIds": ["${TradingEC2}"]}'
+
+  StopEC2Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: Stop-TFL-EC2-Daily
+      Description: Stops the trading server at 4:00 PM IST (10:30 AM UTC) on weekdays.
+      ScheduleExpression: "cron(30 10 ? * MON-FRI *)"
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
+        RoleArn: !GetAtt EventBridgeSchedulerRole.Arn
+        Input: !Sub '{"InstanceIds": ["${TradingEC2}"]}'
+
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: TFL-Trading-App-Logs
+      RetentionInDays: 30
+
+  SNSTopicNotifications:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: TFL-Notifications
+
+# ==============================================================================
+# --- OUTPUTS ---
+# These values will be displayed after the stack is successfully created.
+# ==============================================================================
+Outputs:
+  EC2InstanceID:
+    Description: The ID of the newly created EC2 trading server.
+    Value: !Ref TradingEC2
+  DynamoDBTableName:
+    Description: The name of the DynamoDB table for trade logs.
+    Value: !Ref TradesDynamoDBTable
+  SNSTopicArn:
+    Description: The ARN of the SNS topic for notifications. You can subscribe your email to this topic.
+    Value: !Ref SNSTopicNotifications
+  CloudWatchLogGroupName:
+    Description: The name of the CloudWatch Log Group for the application.
+    Value: !Ref CloudWatchLogGroup

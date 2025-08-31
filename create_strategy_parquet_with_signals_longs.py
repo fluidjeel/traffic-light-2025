@@ -1,304 +1,247 @@
-# create_strategy_parquet_with_signals_longs.py
-#
-# Description:
-# This script consolidates all necessary 15-minute and daily data for the
-# TrafficLight-Manny (Longs) strategy into a single, optimized, and partitioned
-# Parquet file.
-#
-# It pre-calculates and flags all potential long entry signals based on a
-# symmetrically opposite logic to the short simulator.
-
-import os
 import pandas as pd
+import os
 import numpy as np
 from pytz import timezone
+import sys
 import warnings
-import shutil
 
 # --- SUPPRESS FUTUREWARNING ---
+# This line will suppress the specific FutureWarning from pandas related to downcasting.
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ==============================================================================
-# --- CONFIGURATION (Symmetrical to shorts_simulator.py and project structure) ---
+# --- CONFIGURATION ---
 # ==============================================================================
 
-# -- PROJECT ROOT DIRECTORY --
-# Assumes the script is run from the root directory of the repo.
-ROOT_DIR = os.path.dirname(os.path.abspath(os.path.abspath(__file__)))
-
-# -- SOURCE DATA DIRECTORIES --
+# --- File Paths ---
+# The script now assumes it is being run from the project's root directory (e.g., D:\algo-2025).
+ROOT_DIR = os.getcwd() # Use the current working directory as the project root.
 DATA_DIRECTORY_15MIN = os.path.join(ROOT_DIR, "data", "universal_processed", "15min")
 DATA_DIRECTORY_DAILY = os.path.join(ROOT_DIR, "data", "universal_processed", "daily")
-
-# -- SYMBOL LIST --
+# This path correctly points to nifty200_fno.csv in your project root directory.
 SYMBOL_LIST_PATH = os.path.join(ROOT_DIR, "nifty200_fno.csv")
+OUTPUT_DIRECTORY = os.path.join(ROOT_DIR, "data", "strategy_specific_data")
+OUTPUT_FILENAME = "tfl_longs_data_with_signals.parquet"
+
+# --- Additional Symbols ---
 ADDITIONAL_SYMBOLS = ['NIFTY50-INDEX', 'NIFTYBANK-INDEX']
 
-# -- OUTPUT CONFIGURATION --
-OUTPUT_DIRECTORY = os.path.join(ROOT_DIR, "data", "strategy_specific_data")
-OUTPUT_PARQUET_FILENAME = "tfl_longs_data_with_signals.parquet"
-
-# --- STRATEGY PARAMETERS (from long_portfolio_simulator.py) ---
-MAX_PATTERN_LOOKBACK = 10
+# --- Strategy Parameters ---
 MIN_CONSECUTIVE_CANDLES = 1
-RSI_THRESHOLD = 75.0 # Inverted from 25
+MAX_PATTERN_LOOKBACK = 10
 MVWAP_PERIOD = 50
 INDEX_EMA_PERIOD = 50
+RSI_THRESHOLD = 75.0
+ATR_TS_PERIOD = 14
+SLIPPAGE_PCT = 0.05 / 100 # 0.05% slippage
 
-# -- STRATEGY-SPECIFIC INDICATORS --
-REQUIRED_15MIN_COLS = [
-    'open', 'high', 'low', 'close',
-    'atr_14',
-    f'mvwap_{MVWAP_PERIOD}',
-    f'ema_{INDEX_EMA_PERIOD}',
-    'volume_ratio'
-]
-REQUIRED_DAILY_COLS = ['rsi_14', 'atr_14_pct']
+# ==============================================================================
+# --- SIGNAL CALCULATION ENGINE ---
+# ==============================================================================
 
-
-def calculate_entry_signals(df, symbol):
+def calculate_signals_for_symbol(symbol, symbol_daily_data):
     """
-    Calculates all potential long entry signals using vectorized operations
-    to ensure no lookahead bias.
-    This is a symmetrical inversion of the short signal logic.
+    Reads a symbol's 15min data, verifies it, and calculates both Fast and
+    Confirmed entry signals.
     """
-    if df.empty:
-        return df
+    print(f"  - Processing signals for: {symbol}")
+    tz = timezone('Asia/Kolkata')
+    is_index = "-INDEX" in symbol
 
-    # --- 1. Price Action Pattern Detection ---
+    # --- 1. Load 15-Min Data ---
+    data_path = os.path.join(DATA_DIRECTORY_15MIN, f"{symbol}_15min_with_indicators.parquet")
+    if not os.path.exists(data_path):
+        print(f"    > Warning: 15min data not found for {symbol}. Skipping.")
+        return None
+    
+    try:
+        df = pd.read_parquet(data_path)
+        if df.empty:
+            print(f"    > Warning: 15min data for {symbol} is empty. Skipping.")
+            return None
+        # --- 2. DATA VERIFICATION AND CLEANING ---
+        # Ensure timezone localization first.
+        df.index = pd.to_datetime(df.index).tz_localize(tz)
+        
+        # Check for and remove duplicate timestamps.
+        if df.index.has_duplicates:
+            print(f"    > Found and removed {df.index.duplicated().sum()} duplicate timestamps for {symbol}.")
+            df = df[~df.index.duplicated(keep='last')]
+            
+        # Ensure data is sorted chronologically. This is CRITICAL for T+1 logic.
+        if not df.index.is_monotonic_increasing:
+            print(f"    > Data for {symbol} was not sorted. Sorting now.")
+            df.sort_index(inplace=True)
+
+    except Exception as e:
+        print(f"    > Error reading or cleaning 15min data for {symbol}: {e}")
+        return None
+
+    # --- 3. Merge Daily Data ---
+    if symbol_daily_data is None or symbol_daily_data.empty:
+        print(f"    > Warning: Daily data not found for {symbol}. Cannot calculate signals.")
+        return None
+        
+    daily_filters_to_map = symbol_daily_data[[f'atr_{ATR_TS_PERIOD}_pct', 'rsi_14']].copy()
+    daily_filters_to_map.rename(columns={
+        f'atr_{ATR_TS_PERIOD}_pct': 'daily_vol_pct',
+        'rsi_14': 'daily_rsi'
+    }, inplace=True)
+    df = pd.merge_asof(df.sort_index(), daily_filters_to_map.sort_index(), left_index=True, right_index=True, direction='backward')
+
+    # --- 4. Identify Base Pattern and Filters ---
     is_red = df['close'] < df['open']
     is_green = df['close'] > df['open']
-    
-    # We now look for a red candle block, followed by a green signal candle.
     red_blocks = (is_red != is_red.shift()).cumsum()
     consecutive_reds = is_red.groupby(red_blocks).cumsum()
     consecutive_reds[~is_red] = 0
+
     num_red_candles_prev = consecutive_reds.shift(1).fillna(0)
-
-    # A "signal candle" is a green candle preceded by 1 to 9 red candles
-    is_signal_candle = (
-        is_green &
-        (num_red_candles_prev >= MIN_CONSECUTIVE_CANDLES) &
-        (num_red_candles_prev <= MAX_PATTERN_LOOKBACK - 1)
-    )
-
-    # --- 2. Trend and Momentum Filter Conditions ---
-    # Daily RSI filter (symmetrically opposite: > 75)
+    
+    # This is the green "signal" candle (T-1 in our entry logic)
+    is_signal_candle = (is_green & (num_red_candles_prev >= MIN_CONSECUTIVE_CANDLES) & (num_red_candles_prev <= MAX_PATTERN_LOOKBACK - 1))
+    
+    # Apply daily filters. This condition must be true on the signal candle.
     rsi_filter_passed = df['daily_rsi'] > RSI_THRESHOLD
-
-    # Intraday trend filter (adaptive for stocks vs. indices, inverted)
-    is_index = "-INDEX" in symbol
     if is_index:
-        trend_filter_passed = df['close'] > df[f'ema_{INDEX_EMA_PERIOD}']
+        trend_filter_passed = df['close'] > df.get(f'ema_{INDEX_EMA_PERIOD}')
     else:
-        trend_filter_passed = df['close'] > df[f'mvwap_{MVWAP_PERIOD}']
+        trend_filter_passed = df['close'] > df.get(f'mvwap_{MVWAP_PERIOD}')
+    
+    is_valid_setup = is_signal_candle & rsi_filter_passed & trend_filter_passed
+    
+    # --- 5. Calculate Trigger Price ---
+    # Calculate the length of the pattern and the trigger price (highest high)
+    df['pattern_len'] = np.where(is_signal_candle, num_red_candles_prev + 1, 0)
+    
+    # Forward fill the pattern length and trigger price to the next candle (the potential entry candle)
+    df['ffill_pattern_len'] = df['pattern_len'].replace(0, np.nan).ffill()
+    
+    # Calculate the trigger price (highest high of the pattern)
+    df['trigger_price'] = df['high'].rolling(window=df['ffill_pattern_len'].max().astype(int) if pd.notna(df['ffill_pattern_len'].max()) else 1).max().shift(1)
+    df['trigger_price'] = np.where(df['pattern_len'] > 0, df['trigger_price'], np.nan)
+    df['ffill_trigger_price'] = df['trigger_price'].ffill()
 
-    # Combine all filter conditions
-    all_filters_passed = rsi_filter_passed & trend_filter_passed
+    # --- 6. Plot Entry Signals ---
+    
+    # A. Fast Entry
+    is_confirmation_candle_T = is_valid_setup.shift(1).fillna(False)
+    breakout_occurred = df['high'] > df['ffill_trigger_price']
+    df['is_fast_entry'] = is_confirmation_candle_T & breakout_occurred
+    df['fast_entry_price'] = df['ffill_trigger_price'] * (1 + SLIPPAGE_PCT)
 
-    # --- 3. Identify Valid Setups ---
-    # A valid setup exists on the signal candle if all filters passed
-    valid_setup_candle = is_signal_candle & all_filters_passed
+    # B. Confirmed Entry
+    # The confirmation candle T is the same as the fast entry candle
+    is_confirmed_breakout = df['is_fast_entry'] 
+    # The entry candle T+1 is the one AFTER the confirmed breakout
+    df['is_confirmed_entry'] = is_confirmed_breakout.shift(1).fillna(False)
+    df['confirmed_entry_price'] = df['open'].shift(-1) * (1 + SLIPPAGE_PCT) # Use next candle's open
 
-    # --- 4. Determine Entry Trigger ---
-    df['trade_trigger'] = valid_setup_candle.shift(1).fillna(False)
-
-    # Calculate the pattern length on the signal candle and shift it
-    df['pattern_len'] = (num_red_candles_prev + 1).shift(1).fillna(0)
-
-    # Find the pattern's high to use as the entry trigger price (symmetrical inversion)
-    indices = np.arange(len(df))
-    pattern_len_arr = df['pattern_len'].to_numpy(dtype=int)
-    pattern_start_indices = np.maximum(0, indices - pattern_len_arr)
-
-    # This is a memory-intensive but accurate way to do a dynamic rolling window
-    highs = df['high'].to_numpy()
-    pattern_highs = np.full(len(df), np.nan)
-
-    # Iterate where a trigger is possible to calculate the dynamic rolling high
-    for i in np.where(df['trade_trigger'])[0]:
-         start_idx = pattern_start_indices[i]
-         # The pattern is from the start index up to the signal candle (i-1)
-         pattern_highs[i] = np.max(highs[start_idx : i])
-
-    df['pattern_high_trigger'] = pattern_highs
-
-    # --- 5. Final Entry Signal ---
-    # The final entry signal is True if a trade is triggered AND the current
-    # candle's high breaks above the pattern's high. (symmetrical inversion)
-    df['is_entry_signal'] = df['trade_trigger'] & (df['high'] > df['pattern_high_trigger'])
-
-    return df
-
-
-def verify_and_sample_data(parquet_path):
-    """
-    Loads the newly created Parquet file, runs verification checks,
-    and prints a sample of entry signals for manual validation.
-    """
-    print("\n--- Starting Verification and Sampling ---")
-    if not os.path.exists(parquet_path):
-        print(f"ERROR: Parquet file not found at {parquet_path}. Verification failed.")
-        return
-
-    try:
-        df = pd.read_parquet(parquet_path)
-        print("✅ Successfully loaded the Parquet file.")
-
-        # --- Verification Checks ---
-        if df.empty:
-            print("❌ VERIFICATION FAILED: The DataFrame is empty.")
-            return
-
-        required_cols = {'symbol', 'is_entry_signal', 'daily_rsi', 'close', 'volume_ratio'}
-        if not required_cols.issubset(df.columns):
-            print(f"❌ VERIFICATION FAILED: Missing one or more required columns. Found: {list(df.columns)}")
-            return
-        print("✅ All required columns are present.")
-
-        if df['close'].isnull().any() or df['daily_rsi'].isnull().any():
-            print("❌ VERIFICATION FAILED: Found Null values in critical 'close' or 'daily_rsi' columns.")
-            return
-        print("✅ No null values found in critical columns.")
-
-        # --- Signal Sampling ---
-        signals_df = df[df['is_entry_signal']].copy()
-        total_signals = len(signals_df)
-        print(f"\nFound a total of {total_signals} entry signals across all symbols.")
-
-        if total_signals > 0:
-            num_samples = min(5, total_signals)
-            print(f"--- Displaying {num_samples} Random Signal Samples for Manual Verification ---")
-            
-            for _, signal in signals_df.sample(n=num_samples).iterrows():
-                symbol = signal['symbol']
-                is_index = "-INDEX" in symbol
-                trend_col = f'ema_{INDEX_EMA_PERIOD}' if is_index else f'mvwap_{MVWAP_PERIOD}'
-                trend_val = signal.get(trend_col, 'N/A')
-
-                print("-" * 50)
-                print(f"  Symbol:    {symbol}")
-                print(f"  Timestamp: {signal['datetime']}")
-                print(f"  Condition 1 (Price > Trend):")
-                print(f"    - Close Price: {signal['close']:.2f}")
-                print(f"    - Trend ({trend_col}): {trend_val:.2f}")
-                print(f"    - Met: {signal['close'] > trend_val}")
-                print(f"  Condition 2 (Daily RSI > Threshold):")
-                print(f"    - Daily RSI: {signal['daily_rsi']:.2f}")
-                print(f"    - Threshold: > {RSI_THRESHOLD}")
-                print(f"    - Met: {signal['daily_rsi'] > RSI_THRESHOLD}")
-            print("-" * 50)
-        else:
-            print("No entry signals were found with the current parameters.")
-
-    except Exception as e:
-        print(f"❌ An error occurred during verification: {e}")
+    # --- 7. Finalize DataFrame ---
+    df['symbol'] = symbol
+    columns_to_keep = [
+        'symbol', 'open', 'high', 'low', 'close',
+        'is_fast_entry', 'fast_entry_price',
+        'is_confirmed_entry', 'confirmed_entry_price',
+        'daily_rsi'
+    ]
+    
+    final_cols = [col for col in columns_to_keep if col in df.columns]
+    
+    # Set prices to NaN if the signal is False
+    df.loc[~df['is_fast_entry'], 'fast_entry_price'] = np.nan
+    df.loc[~df['is_confirmed_entry'], 'confirmed_entry_price'] = np.nan
+    
+    return df[final_cols]
 
 
 def main():
-    """Main function to orchestrate the data consolidation and signal calculation."""
-    print("--- Starting Enhanced Parquet File Creation with Entry Signals ---")
-
-    # --- 1. Get list of all symbols ---
+    """Main function to orchestrate the signal data creation process."""
+    print("--- Starting Long Signal Data Preparation (Fast & Confirmed Entries) ---")
+    
     try:
         symbols_df = pd.read_csv(SYMBOL_LIST_PATH)
-        symbols_to_process = symbols_df['symbol'].tolist()
-        symbols_to_process.extend(ADDITIONAL_SYMBOLS)
-        symbols_to_process = sorted(list(set(symbols_to_process)))
-        print(f"Found {len(symbols_to_process)} symbols to process.")
+        symbols_from_csv = symbols_df['symbol'].tolist()
+        symbols_to_process = sorted(list(set(symbols_from_csv + ADDITIONAL_SYMBOLS)))
     except FileNotFoundError:
-        print(f"ERROR: Symbol list not found at {SYMBOL_LIST_PATH}. Exiting.")
-        return
+        print(f"Warning: Symbol list not found at: {SYMBOL_LIST_PATH}. Running on indices only.")
+        symbols_to_process = sorted(ADDITIONAL_SYMBOLS)
+        
+    print(f"Found {len(symbols_to_process)} total symbols to process.")
 
-    # --- 2. Process each symbol and collect dataframes ---
-    all_symbol_dfs = []
+    print("Pre-loading all daily data for efficient merging...")
+    daily_data_map = {}
     tz = timezone('Asia/Kolkata')
-
     for symbol in symbols_to_process:
-        print(f"  - Processing {symbol}...")
-        try:
-            # --- a. Load data ---
-            path_15min = os.path.join(DATA_DIRECTORY_15MIN, f"{symbol}_15min_with_indicators.parquet")
-            path_daily = os.path.join(DATA_DIRECTORY_DAILY, f"{symbol}_daily_with_indicators.parquet")
-
-            if not os.path.exists(path_15min) or not os.path.exists(path_daily):
-                print(f"    - Warning: Data file missing for {symbol}. Skipping.")
-                continue
-
-            df_15min = pd.read_parquet(path_15min)
-            df_daily = pd.read_parquet(path_daily)
-
-            if df_15min.empty or df_daily.empty:
-                print(f"    - Warning: Data file for {symbol} is empty. Skipping.")
-                continue
-
-            # --- b. Clean, select, and merge data ---
-            df_15min = df_15min[REQUIRED_15MIN_COLS].copy()
-            df_daily = df_daily[REQUIRED_DAILY_COLS].copy()
+        daily_path = os.path.join(DATA_DIRECTORY_DAILY, f"{symbol}_daily_with_indicators.parquet")
+        if os.path.exists(daily_path):
+            df_daily = pd.read_parquet(daily_path)
             df_daily = df_daily[df_daily.index.notna()]
-
-            df_15min.index = df_15min.index.tz_localize(tz)
-            df_daily.index = df_daily.index.tz_localize(tz).normalize()
-
-            df_daily.rename(columns={'rsi_14': 'daily_rsi', 'atr_14_pct': 'daily_vol_pct'}, inplace=True)
-
-            df_merged = pd.merge_asof(
-                df_15min.sort_index(), df_daily.sort_index(),
-                left_index=True, right_index=True, direction='backward'
-            )
-            
-            # Drop rows with nulls after merging
-            df_merged.dropna(inplace=True)
-
-            # --- c. Calculate entry signals ---
-            df_with_signals = calculate_entry_signals(df_merged, symbol)
-            df_with_signals['symbol'] = symbol
-            all_symbol_dfs.append(df_with_signals)
-
+            if not df_daily.empty:
+                df_daily.index = df_daily.index.tz_localize(tz).normalize()
+                daily_data_map[symbol] = df_daily
+    
+    # --- Sequential Execution ---
+    all_symbol_dfs = []
+    symbols_with_signals = {} # To store symbols that have signals for verification
+    
+    for symbol in symbols_to_process:
+        try:
+            symbol_daily_data = daily_data_map.get(symbol)
+            result_df = calculate_signals_for_symbol(symbol, symbol_daily_data)
+            if result_df is not None:
+                all_symbol_dfs.append(result_df)
+                # Check if signals were generated for verification later
+                if result_df['is_fast_entry'].any():
+                    symbols_with_signals['fast'] = symbol
+                if result_df['is_confirmed_entry'].any():
+                    symbols_with_signals['confirmed'] = symbol
         except Exception as e:
-            print(f"    - ERROR processing {symbol}: {e}")
+            print(f"---! An unexpected error occurred processing {symbol}: {e}, {sys.exc_info()[-1].tb_lineno} !---")
+
 
     if not all_symbol_dfs:
-        print("No data was processed. Exiting.")
+        print("\nNo data was processed. No output file will be created.")
         return
 
-    # --- 3. Concatenate and save final dataset ---
-    print("\nConcatenating data for all symbols...")
-    final_df = pd.concat(all_symbol_dfs, ignore_index=False)
-
-    output_path = os.path.join(OUTPUT_DIRECTORY, OUTPUT_PARQUET_FILENAME)
-    if os.path.exists(output_path):
-        print(f"Removing existing directory: {output_path}")
-        shutil.rmtree(output_path)
-
+    print("\nCombining all processed symbols into a single master DataFrame...")
+    master_df = pd.concat(all_symbol_dfs, ignore_index=False)
+    
+    master_df['symbol'] = master_df['symbol'].astype('category')
+    
+    output_path = os.path.join(OUTPUT_DIRECTORY, OUTPUT_FILENAME)
     os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
+    
     print(f"Saving partitioned Parquet file to: {output_path}")
-
-    # Select final columns to keep the file clean.
-    final_cols_to_keep = [
-        'open', 'high', 'low', 'close', 'atr_14', f'mvwap_{MVWAP_PERIOD}',
-        f'ema_{INDEX_EMA_PERIOD}', 'daily_rsi', 'daily_vol_pct', 'is_entry_signal',
-        'volume_ratio', 'symbol'
-    ]
-    # Filter the DataFrame, keeping only the essential columns plus the 'symbol' for partitioning.
-    # The helper columns from signal calculation are now dropped.
-    final_df = final_df[final_cols_to_keep]
-
-    # Set datetime as a column before saving for easier loading
-    final_df.reset_index(inplace=True)
-    final_df.rename(columns={'index': 'datetime'}, inplace=True)
-
-    final_df.to_parquet(
-        path=output_path,
+    master_df.to_parquet(
+        output_path,
         engine='pyarrow',
+        compression='snappy',
         partition_cols=['symbol']
     )
-
+    
     print("\n--- Process Complete! ---")
-    print("Your strategy-specific Parquet file with pre-calculated entry signals is ready.")
+    
+    # --- 8. FINAL VERIFICATION & SAMPLE PRINTING ---
+    print("\n--- Verification Samples ---")
+    for entry_type, symbol in symbols_with_signals.items():
+        print(f"\nLoading sample for '{entry_type.title()} Entry' from symbol '{symbol}'...")
+        try:
+            # Read the specific partition for the symbol from the saved file
+            symbol_df = pd.read_parquet(output_path, filters=[('symbol', '==', symbol)])
+            signal_col = f'is_{entry_type}_entry'
+            
+            # FIX: Fill NA values with False to ensure a pure boolean mask.
+            # This prevents the "Cannot mask with non-boolean array" error.
+            sample = symbol_df[symbol_df[signal_col].fillna(False)].tail(5)
+            
+            if not sample.empty:
+                print(sample)
+            else:
+                print(f"No '{entry_type}' signals found for symbol '{symbol}' in the final file.")
 
-    # --- 4. Verify the created file and sample signals ---
-    verify_and_sample_data(output_path)
+        except Exception as e:
+            print(f"Could not load or display sample for {symbol}: {e}")
 
 
 if __name__ == "__main__":
