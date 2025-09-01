@@ -8,23 +8,21 @@ import matplotlib.pyplot as plt
 import sys
 import codecs # Import codecs for the fix
 
-# SCRIPT VERSION v3.3
+# SCRIPT VERSION v3.7
 #
-# NEW FEATURE (In response to user request):
-# v3.3: - Added a new flag `AVOID_OPEN_CLOSE_ENTRIES` to prevent the system
-#         from taking new trades on the volatile 9:15 AM opening candle and
-#         the 3:15 PM pre-closing candle.
-#
-# PREVIOUS FEATURE:
-# v3.2: - Added a hybrid intraday/positional trading mode.
+# CRITICAL BUG FIX (In response to user error report):
+# v3.7: - Fixed a "ValueError: cannot convert float NaN to integer" that occurred
+#         during position sizing.
+#       - The bug was caused by the simulator failing to find the 'pattern_low'
+#         (for the stop-loss) on the entry candle's data row.
+#       - The fix implements a data preparation step after loading, which creates
+#         a new 'pattern_low_for_sl' column that correctly carries forward the
+#         stop-loss level from the setup candle to the entry candle.
 #
 # PREVIOUS BUG FIX:
-# v3.1: - Corrected a critical flaw that allowed re-entry into active positions.
-#
-# PREVIOUS ARCHITECTURAL UPGRADES:
-# v3.0: - DATA PIPELINE: Removed on-the-fly ATR calculation.
-#       - RISK LOGIC: Enhanced position sizing to fit remaining risk budgets.
-# ... (and all previous bug fixes from v1.0-v2.6)
+# v3.6: - Fixed a TypeError in the final metrics calculation.
+# v3.5: - Corrected unrealistic entry prices on market open gaps.
+# v3.4: - Corrected P&L calculation and added slippage to long entries.
 
 # Fix for pandas_ta compatibility
 np.NaN = np.nan
@@ -42,7 +40,7 @@ START_DATE = '2018-01-01'
 END_DATE = '2025-08-22'
 
 # --- Portfolio & Risk Management ---
-STRATEGY_NAME = "TrafficLight-Manny-LONGS_PORTFOLIO_v3.3"
+STRATEGY_NAME = "TrafficLight-Manny-LONGS_PORTFOLIO_v3.7"
 ENTRY_TYPE_TO_USE = 'fast'
 INITIAL_CAPITAL = 1000000.00
 RISK_PER_TRADE_PCT = 0.01
@@ -54,11 +52,8 @@ TRANSACTION_COST_PCT = 0.03 / 100
 
 # --- SIMULATOR MODE ---
 EXIT_ON_EOD = True
-# NEW v3.2: If True, trades entered after the threshold time will not be force-closed at EOD,
-# even if EXIT_ON_EOD is True. This allows for a hybrid intraday/positional strategy.
 ALLOW_AFTERNOON_POSITIONAL = False
-AFTERNOON_ENTRY_THRESHOLD = "14:00"
-# NEW v3.3: If True, prevents taking new entries on the first (9:15) and last (15:15) candles of the day.
+AFTERNOON_ENTRY_THRESHOLD = "13:00"
 AVOID_OPEN_CLOSE_ENTRIES = True
 
 # --- MARKET REGIME FILTERS ---
@@ -122,7 +117,7 @@ def log_configs(log_dir):
         for key, value in market_regime_vars.items(): f.write(f"- {key}: {value}\n")
         f.write("-" * 30 + "\n\n")
 
-def calculate_and_log_metrics(log_dir, closed_trades_df, equity_curve):
+def calculate_and_log_metrics(log_dir, closed_trades_df, equity_curve_df):
     if closed_trades_df.empty:
         metrics = "No trades were executed."
     else:
@@ -133,9 +128,11 @@ def calculate_and_log_metrics(log_dir, closed_trades_df, equity_curve):
         gross_loss = closed_trades_df[closed_trades_df['pnl'] <= 0]['pnl'].sum()
         profit_factor = abs(gross_profit / gross_loss) if gross_loss != 0 else float('inf')
         net_pnl = closed_trades_df['pnl'].sum()
-        equity_curve['peak'] = equity_curve['equity'].cummax()
-        equity_curve['drawdown'] = (equity_curve['equity'] - equity_curve['peak']) / equity_curve['peak']
-        max_drawdown = equity_curve['drawdown'].min() * 100
+        
+        equity_curve_df['peak'] = equity_curve_df['equity'].cummax()
+        equity_curve_df['drawdown'] = (equity_curve_df['equity'] - equity_curve_df['peak']) / equity_curve_df['peak']
+        max_drawdown = equity_curve_df['drawdown'].min() * 100
+        
         metrics = (
             f"--- Performance Metrics ---\n"
             f"- Total Trades: {total_trades}\n- Win Rate: {win_rate:.2f}%\n"
@@ -171,6 +168,12 @@ def main():
     master_df.reset_index(inplace=True)
     master_df.drop_duplicates(subset=['datetime', 'symbol'], keep='first', inplace=True)
     master_df.set_index('datetime', inplace=True)
+
+    # BUG FIX v3.7: Prepare the data after loading to create a dedicated column
+    # for the entry's stop-loss. This carries the 'pattern_low' from the setup
+    # candle (T-1) forward to the entry candle (T).
+    master_df.sort_values(by=['symbol', 'datetime'], inplace=True)
+    master_df['pattern_low_for_sl'] = master_df.groupby('symbol')['pattern_low'].shift(1)
 
     merged_df = pd.merge_asof(master_df.sort_index(), regime_df.sort_index(), left_index=True, right_index=True, direction='backward')
     
@@ -228,8 +231,10 @@ def main():
                 gross_proceeds = trade['quantity'] * exit_price
                 net_proceeds = gross_proceeds * (1 - TRANSACTION_COST_PCT)
                 cash += net_proceeds
-                initial_cost = trade['quantity'] * trade['entry_price']
+                
+                initial_cost = trade['initial_cost_with_fees']
                 pnl = net_proceeds - initial_cost
+
                 trade.update({'exit_time': ts, 'exit_price': exit_price, 'exit_reason': exit_reason, 'pnl': pnl})
                 closed_trades_log.append(trade)
                 positions_to_close.append(trade)
@@ -244,13 +249,13 @@ def main():
         regime_ok = breadth_ok and volatility_ok and trend_ok
             
         if regime_ok:
-            # NEW v3.3: Check if the current timestamp is one to be avoided
             current_time_str = ts.strftime('%H:%M')
             if AVOID_OPEN_CLOSE_ENTRIES and (current_time_str == '09:15' or current_time_str == '15:15'):
-                pass # Skip the entry logic for these specific candles
+                pass
             else:
                 equity_for_risk_calc = equity
-                entry_signal_col, entry_price_col = f'is_{ENTRY_TYPE_TO_USE}_entry', f'{ENTRY_TYPE_TO_USE}_entry_price'
+                entry_signal_col = f'is_{ENTRY_TYPE_TO_USE}_entry'
+                price_col = f'{ENTRY_TYPE_TO_USE}_entry_price'
                 potential_trades = current_data_slice[current_data_slice[entry_signal_col] == True].sort_values(by='daily_rsi', ascending=False)
                 
                 active_symbols = [p['symbol'] for p in open_positions]
@@ -258,7 +263,7 @@ def main():
                 for _, signal in potential_trades.iterrows():
                     if signal['symbol'] in active_symbols:
                         continue
-                    
+                        
                     if len(open_positions) >= STRICT_MAX_OPEN_POSITIONS:
                         rejected_trades_log.append({'timestamp': ts, 'symbol': signal['symbol'], 'reason': 'MAX_POSITIONS_REACHED'}); continue
                     
@@ -268,15 +273,26 @@ def main():
 
                     if risk_amount <= 0:
                         rejected_trades_log.append({'timestamp': ts, 'symbol': signal['symbol'], 'reason': 'MAX_TOTAL_RISK_EXCEEDED'}); break
-
-                    entry_price = signal[entry_price_col]
-                    initial_sl = signal.get('pattern_low', entry_price * 0.98)
+                    
+                    base_entry_price = signal[price_col]
+                    realistic_base_entry_price = max(base_entry_price, signal['open'])
+                    entry_price = realistic_base_entry_price * (1 + SLIPPAGE_PCT)
+                    
+                    # BUG FIX v3.7: Use the new 'pattern_low_for_sl' column to get the
+                    # correct stop-loss level from the setup candle.
+                    initial_sl = signal.get('pattern_low_for_sl', entry_price * 0.98)
+                    
+                    # Add a final check to ensure SL is a valid number before proceeding
+                    if pd.isna(initial_sl):
+                        rejected_trades_log.append({'timestamp': ts, 'symbol': signal['symbol'], 'reason': 'MISSING_SL_VALUE'})
+                        continue
+                        
                     risk_per_share = entry_price - initial_sl
                     if risk_per_share <= 0: continue
                     
                     quantity_by_risk = int(risk_amount / risk_per_share)
                     capital_for_trade = equity_for_risk_calc * MAX_CAPITAL_PER_TRADE_PCT
-                    quantity_by_capital = int(capital_for_trade / entry_price)
+                    quantity_by_capital = int(capital_for_trade / entry_price) if entry_price > 0 else 0
                     quantity = min(quantity_by_risk, quantity_by_capital)
                     
                     cost = quantity * entry_price * (1 + TRANSACTION_COST_PCT)
@@ -292,7 +308,8 @@ def main():
                             'sl': initial_sl, 'tp': entry_price + (risk_per_share * RISK_REWARD_RATIO),
                             'initial_risk_per_share': risk_per_share, 'initial_risk_value': actual_risk_value,
                             'initial_sl': initial_sl, 'be_activated': False, 'current_ts_multiplier': ATR_TS_MULTIPLIER,
-                            'is_afternoon_entry': is_afternoon_entry
+                            'is_afternoon_entry': is_afternoon_entry,
+                            'initial_cost_with_fees': cost
                         }
                         open_positions.append(new_trade)
                         total_current_risk_value += actual_risk_value
@@ -316,6 +333,7 @@ def main():
 
     closed_df = pd.DataFrame(closed_trades_log)
     rejected_df = pd.DataFrame(rejected_trades_log)
+    
     equity_df = pd.DataFrame(equity_curve).set_index('datetime')
     
     if not closed_df.empty: closed_df.to_csv(os.path.join(log_dir, 'trade_log.csv'), index=False)
