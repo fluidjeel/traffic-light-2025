@@ -1,102 +1,113 @@
 # ------------------------------------------------------------------------------------------------
-# logger_service.py - Centralized Logging for Console and CSV
+# logger_service.py - The Centralized Scribe for the Trading Bot
 # ------------------------------------------------------------------------------------------------
 #
-# This component acts as the central hub for all logging activities.
-# - It receives log messages from all other components.
-# - It prints formatted, high-level messages to the console for real-time monitoring.
-# - When verbose mode is enabled, it writes detailed, structured logs to daily CSV files
-#   for deep-dive analysis and debugging.
+# This component handles all logging, both to the console and to detailed CSV files.
+# By centralizing logging, we can easily control the verbosity and ensure that
+# file writing does not block the main trading logic.
+#
+# NEW: Added support for 'in_trade_management_log' to provide detailed insights
+#      into the dynamic exit strategy.
 #
 # ------------------------------------------------------------------------------------------------
 
-import os
 import csv
-import queue
-import threading
+import os
 from datetime import datetime
+import threading
+import queue
+import pytz
+
+import config
 
 class LoggerService:
-    def __init__(self, verbose_logging=False):
-        self.verbose_logging = verbose_logging
+    def __init__(self, verbose=False):
+        self.verbose_logging = verbose
         self.log_queue = queue.Queue()
-        self.stop_event = threading.Event()
+        self.worker_thread = threading.Thread(target=self._process_log_queue, daemon=True)
+        self.timezone = pytz.timezone(config.MARKET_TIMEZONE)
         
-        self.log_dir = self.get_todays_log_dir()
-        if self.verbose_logging:
-            os.makedirs(self.log_dir, exist_ok=True)
-            print(f"13:54:03 | INFO   | Verbose logging is ON. Detailed logs will be saved to: {self.log_dir}")
-
         self.csv_files = {}
         self.csv_writers = {}
         self.csv_headers = {
             'data_health_log': ['timestamp', 'event_type', 'symbol', 'status', 'details'],
             'scanner_log': ['timestamp', 'symbol', 'price', 'daily_rsi', 'is_rsi_ok', 'mvwap', 'is_mvwap_ok', 'pattern_found', 'is_setup_valid', 'rejection_reason'],
-            'execution_log': ['timestamp', 'symbol', 'direction', 'status', 'rejection_reason', 'qty_by_risk', 'qty_by_capital', 'final_qty', 'fill_price']
+            'execution_log': ['timestamp', 'symbol', 'direction', 'status', 'details'],
+            'trade_log': ['symbol', 'direction', 'entry_time', 'exit_time', 'entry_price', 'exit_price', 'quantity', 'pnl', 'exit_reason'],
+            'in_trade_management_log': ['timestamp', 'symbol', 'update_type', 'old_sl', 'new_sl', 'current_price', 'current_r_value']
         }
-
+        self.lock = threading.Lock()
+        
         if self.verbose_logging:
-            self._setup_csv_files()
+            self._setup_csv_logging()
 
-        self.worker_thread = threading.Thread(target=self._process_log_queue, daemon=True)
         self.worker_thread.start()
 
-    def _setup_csv_files(self):
-        """Initializes CSV files with headers."""
+    def _setup_csv_logging(self):
+        """Creates the log directory and initializes CSV files and writers."""
+        log_dir = self.get_todays_log_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        
         for log_type, headers in self.csv_headers.items():
-            file_path = os.path.join(self.log_dir, f"{log_type}.csv")
-            # Open file and keep it open
-            self.csv_files[log_type] = open(file_path, 'w', newline='', encoding='utf-8')
-            writer = csv.DictWriter(self.csv_files[log_type], fieldnames=headers)
-            writer.writeheader()
+            filepath = os.path.join(log_dir, f"{log_type}.csv")
+            file_exists = os.path.exists(filepath)
+            
+            # Use 'a+' to allow appending and reading, newline='' to handle line endings correctly
+            f = open(filepath, 'a+', newline='', encoding='utf-8')
+            self.csv_files[log_type] = f
+            
+            writer = csv.DictWriter(f, fieldnames=headers)
+            if not file_exists:
+                writer.writeheader() # Write header only if the file is new
+            
             self.csv_writers[log_type] = writer
 
-    def _process_log_queue(self):
-        """The target method for the worker thread to process logs."""
-        while not self.stop_event.is_set() or not self.log_queue.empty():
-            try:
-                log_item = self.log_queue.get(timeout=1)
-                if log_item is None: continue
-
-                log_type = log_item['type']
-                data = log_item['data']
-
-                if log_type == 'console':
-                    print(data)
-                elif self.verbose_logging and log_type in self.csv_writers:
-                    # --- FIX: Correctly call writerow on the DictWriter object ---
-                    self.csv_writers[log_type].writerow(data)
-                    self.csv_files[log_type].flush() # Ensure data is written immediately
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"CRITICAL: Logger thread encountered an error: {e}")
-
-    def log_console(self, level, message):
-        """Logs a message to the console."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        log_entry = f"{timestamp} | {level.ljust(7)}| {message}"
-        self.log_queue.put({'type': 'console', 'data': log_entry})
-
-    def log_to_csv(self, log_type, data_dict):
-        """Logs a dictionary of data to the specified CSV file."""
-        if self.verbose_logging:
-            # Add timestamp to every CSV log entry
-            data_dict_with_ts = {'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            data_dict_with_ts.update(data_dict)
-            self.log_queue.put({'type': log_type, 'data': data_dict_with_ts})
-    
     def get_todays_log_dir(self):
         """Returns the path for today's log directory."""
-        return os.path.join(os.getcwd(), 'logs', datetime.now().strftime('%Y-%m-%d'))
+        return os.path.join('logs', datetime.now(self.timezone).strftime('%Y-%m-%d'))
+
+    def log_console(self, level, message):
+        """Logs a message to the console with a timestamp and level."""
+        timestamp = datetime.now(self.timezone).strftime('%H:%M:%S')
+        print(f"{timestamp} | {level.upper():<7} | {message}")
+
+    def log_to_csv(self, log_type, data_dict):
+        """Puts a log message into the queue to be written to a CSV file."""
+        if self.verbose_logging:
+            self.log_queue.put({'type': log_type, 'data': data_dict})
+
+    def _process_log_queue(self):
+        """The target function for the worker thread to process log messages."""
+        while True:
+            try:
+                log_item = self.log_queue.get()
+                if log_item is None: # Shutdown signal
+                    break
+                
+                log_type = log_item['type']
+                data_dict = log_item['data']
+
+                with self.lock:
+                    if log_type in self.csv_writers:
+                        try:
+                            self.csv_writers[log_type].writerow(data_dict)
+                            self.csv_files[log_type].flush() # Ensure it's written immediately
+                        except Exception as e:
+                            self.log_console("ERROR", f"Failed to write to {log_type}.csv: {e}")
+                
+                self.log_queue.task_done()
+            except Exception as e:
+                # This outer catch is for unexpected errors in the queue logic itself
+                self.log_console("FATAL", f"Logger thread encountered an error: {e}")
 
     def shutdown(self):
-        """Gracefully shuts down the logging service."""
-        self.log_queue.put(None) # Sentinel to unblock the queue
-        self.stop_event.set()
-        self.worker_thread.join(timeout=5)
-        for f in self.csv_files.values():
-            f.close()
-        print(f"{datetime.now().strftime('%H:%M:%S')} | INFO   | Logger service shut down.")
+        """Shuts down the logger service gracefully."""
+        self.log_console("INFO", "Logger service shutting down...")
+        self.log_queue.put(None) # Signal the worker thread to exit
+        self.worker_thread.join(timeout=5) # Wait for the thread to finish
+        
+        with self.lock:
+            for f in self.csv_files.values():
+                f.close()
+        print("Logger service shut down.")
 

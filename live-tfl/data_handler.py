@@ -1,25 +1,29 @@
 # ------------------------------------------------------------------------------------------------
-# data_handler.py - Connects to Fyers, Fetches Ticks, and Builds Candles
+# data_handler.py - The Single Source of Truth for Market Data
 # ------------------------------------------------------------------------------------------------
 #
-# This component is responsible for all market data interactions.
-# - Handles authentication with Fyers.
-# - Connects to the websocket for live tick data.
-# - Manages the subscription to the required symbols.
-# - Aggregates incoming ticks into 1-minute and 15-minute candles.
-# - Publishes 'TICK' and 'CANDLE_CLOSED_15MIN' events to the Event Bus.
-# - Fetches historical data needed for indicator calculations.
+# ARCHITECTURAL UPGRADE: This version incorporates all learnings from our zero-trust
+# diagnostic testing to create a robust and reliable data connection.
+#
+# KEY FEATURES:
+# - Decoupled Connection/Subscription: Waits for a connection to be fully confirmed
+#   before sending subscription requests, eliminating race conditions.
+# - Brute-Force Subscription: Subscribes to all relevant data types to guarantee
+#   receipt of live ticks from the Fyers API v3.
+# - Intelligent Message Parsing: The on_message handler can parse different
+#   message formats ('sf', 'dp') to correctly extract live price and volume.
 #
 # ------------------------------------------------------------------------------------------------
 
 import os
 import time
+import json
 import pandas as pd
 from datetime import datetime, timedelta
 from fyers_apiv3 import fyersModel
-# --- FIX: Using the correct import path for the FyersDataSocket class ---
-from fyers_apiv3.FyersWebsocket.data_ws import FyersDataSocket
-import pandas_ta as ta
+from fyers_apiv3.FyersWebsocket import data_ws
+import pytz
+import threading
 
 import config
 
@@ -28,33 +32,79 @@ class DataHandler:
         self.symbols = symbols
         self.event_bus = event_bus
         self.logger = logger
+        self.timezone = pytz.timezone(config.MARKET_TIMEZONE)
         
-        # Internal state for candle aggregation
-        self.candles_1min = {symbol: [] for symbol in self.symbols}
-        self.candles_15min = {symbol: pd.DataFrame(columns=['datetime', 'open', 'high', 'low', 'close', 'volume']) for symbol in self.symbols}
-        self.last_tick_prices = {symbol: None for symbol in self.symbols}
-
         self.fyers_rest_client = None
         self.fyers_ws = None
-        self.access_token = self._read_token_from_file() # Read token initially
+        self.access_token = self._read_token_from_file()
+
+        self.last_tick_prices = {symbol: 0 for symbol in self.symbols}
+        self.candles_1min_data = []
+        self.candles_15min = {symbol: pd.DataFrame() for symbol in self.symbols}
+        self.last_15min_resample_time = None
+        
+        self.is_connected = False
+
+    # --- WebSocket Callback Methods ---
+
+    def _on_connect(self):
+        """Callback executed upon a successful WebSocket connection."""
+        self.logger.log_console("SUCCESS", "Fyers WebSocket connection established.")
+        self.is_connected = True
+
+    def _on_error(self, msg):
+        """Callback to handle WebSocket errors."""
+        self.logger.log_console("ERROR", f"WebSocket Error: {msg}")
+
+    def _on_close(self, msg=""):
+        """Callback for when the WebSocket connection is closed."""
+        self.logger.log_console("INFO", f"WebSocket connection closed. Reason: {msg}")
+        self.is_connected = False
+
+    def _on_message(self, msg):
+        """
+        Processes incoming messages, emits a heartbeat, and parses different
+        message types to find live tick data.
+        """
+        try:
+            self.event_bus.publish('DATA_HANDLER_HEARTBEAT', {'timestamp': datetime.now(self.timezone)})
+            
+            data = json.loads(msg) if isinstance(msg, str) else msg
+            if not isinstance(data, dict): return
+
+            symbol, ltp, volume = None, None, None
+
+            if data.get("type") == "sf": # Symbol Feed
+                symbol = data.get("symbol")
+                ltp = data.get("ltp")
+                volume = data.get("last_traded_qty")
+            elif data.get("type") == "dp": # Depth Packet
+                symbol = data.get("symbol")
+                ltp = data.get("ltp")
+                volume = data.get("last_traded_qty")
+
+            if symbol and ltp is not None and volume is not None:
+                ts = datetime.fromtimestamp(data.get('timestamp', time.time()), tz=self.timezone)
+                self.last_tick_prices[symbol] = ltp
+                self.event_bus.publish('TICK', {'symbol': symbol, 'price': ltp, 'timestamp': ts})
+                self._aggregate_tick(ts, symbol, ltp, volume)
+
+        except Exception as e:
+            self.logger.log_console("ERROR", f"Error processing tick message: {e} | Raw: {msg}")
+
+
+    # --- Connection and Data Handling Logic ---
 
     def _read_token_from_file(self):
-        """Reads the access token from the file if it exists."""
         if os.path.exists(config.TOKEN_FILE):
-            with open(config.TOKEN_FILE, 'r') as f:
-                return f.read().strip()
+            with open(config.TOKEN_FILE, 'r') as f: return f.read().strip()
         return None
 
     def _generate_new_token(self):
-        """Handles the interactive Fyers authentication flow to get a new access token."""
         try:
-            self.logger.log_console("AUTH", "Starting authentication flow to get a new access token...")
             session = fyersModel.SessionModel(
-                client_id=config.CLIENT_ID,
-                secret_key=config.SECRET_KEY,
-                redirect_uri=config.REDIRECT_URI,
-                response_type='code',
-                grant_type='authorization_code'
+                client_id=config.CLIENT_ID, secret_key=config.SECRET_KEY,
+                redirect_uri=config.REDIRECT_URI, response_type='code', grant_type='authorization_code'
             )
             auth_url = session.generate_authcode()
             self.logger.log_console("AUTH", f"1. Go to this URL and log in: {auth_url}")
@@ -65,168 +115,140 @@ class DataHandler:
             
             if response.get("access_token"):
                 access_token = response["access_token"]
-                with open(config.TOKEN_FILE, 'w') as f:
-                    f.write(access_token)
+                with open(config.TOKEN_FILE, 'w') as f: f.write(access_token)
                 self.logger.log_console("SUCCESS", "New access token generated and saved.")
                 return access_token
-            else:
-                self.logger.log_console("FATAL", f"Failed to generate access token: {response}")
-                return None
+            return None
         except Exception as e:
             self.logger.log_console("FATAL", f"An error occurred during authentication: {e}")
             return None
 
-    def connect(self):
-        """Initializes clients and handles token expiration and renewal."""
+    def connect_and_load_history(self):
         if not self.access_token:
-            self.logger.log_console("INFO", "Access token not found.")
             self.access_token = self._generate_new_token()
             if not self.access_token: return False
 
-        # --- ENHANCED LOGIC: Attempt connection and re-authenticate on failure ---
         try:
-            self.logger.log_console("INFO", "Attempting to validate existing access token...")
             self.fyers_rest_client = fyersModel.FyersModel(
                 client_id=config.CLIENT_ID, is_async=False, token=self.access_token, log_path=os.getcwd()
             )
-            # A simple API call to check if the token is valid
-            if self.fyers_rest_client.get_profile()['s'] != 'ok':
-                raise Exception("Token validation failed.")
+            if self.fyers_rest_client.get_profile()['s'] != 'ok': raise Exception("Token validation failed.")
             self.logger.log_console("SUCCESS", "Existing access token is valid.")
-
         except Exception:
-            self.logger.log_console("WARN", "Existing access token is invalid or expired. Deleting old token and re-authenticating.")
-            if os.path.exists(config.TOKEN_FILE):
-                os.remove(config.TOKEN_FILE)
-            
+            self.logger.log_console("WARN", "Token invalid/expired. Re-authenticating.")
+            if os.path.exists(config.TOKEN_FILE): os.remove(config.TOKEN_FILE)
             self.access_token = self._generate_new_token()
             if not self.access_token: return False
-            
-            # Retry initializing the client with the new token
             self.fyers_rest_client = fyersModel.FyersModel(
                 client_id=config.CLIENT_ID, is_async=False, token=self.access_token, log_path=os.getcwd()
             )
+        
+        self.logger.log_console("INFO", "Loading historical 15-min data for all symbols...")
+        for symbol in self.symbols:
+            hist_df = self.get_historical_data(symbol, resolution='15', days_of_data=15)
+            if not hist_df.empty:
+                self.candles_15min[symbol] = hist_df.set_index('datetime')
+        self.logger.log_console("SUCCESS", "Historical 15-min data loaded.")
 
-        # --- WebSocket client setup (proceeds only after successful REST client init) ---
         try:
-            self.logger.log_console("INFO", "Attempting to connect to Fyers WebSocket...")
-            self.fyers_ws = FyersDataSocket(
+            self.fyers_ws = data_ws.FyersDataSocket(
                 access_token=f"{config.CLIENT_ID}:{self.access_token}",
-                log_path=os.getcwd()
+                log_path=os.getcwd(), on_connect=self._on_connect,
+                on_error=self._on_error, on_close=self._on_close, on_message=self._on_message
             )
-            self.fyers_ws.on_connect = lambda: self.logger.log_console("SUCCESS", "Fyers WebSocket connected.")
-            self.fyers_ws.on_error = lambda msg: self.logger.log_console("ERROR", f"WebSocket Error: {msg}")
-            self.fyers_ws.on_close = lambda: self.logger.log_console("INFO", "WebSocket connection closed.")
-            self.fyers_ws.on_message = self.on_message
-            self.fyers_ws.connect()
+            ws_thread = threading.Thread(target=self.fyers_ws.connect, daemon=True)
+            ws_thread.start()
             
-            self.fyers_ws.subscribe(symbols=self.symbols, data_type="symbolData")
+            self.logger.log_console("INFO", "Waiting for WebSocket connection to initialize...")
+            wait_cycles = 0
+            while not self.is_connected and wait_cycles < 15: # Increased timeout
+                time.sleep(1)
+                wait_cycles += 1
+            
+            if not self.is_connected:
+                self.logger.log_console("FATAL", "WebSocket connection did not initialize in time.")
+                return False
+            
+            subscription_types = ["symbolData", "SymbolUpdate", "depthData", "DepthUpdate"]
+            self.logger.log_console("INFO", "Connection confirmed. Sending subscription requests...")
+            for stype in subscription_types:
+                try:
+                    self.fyers_ws.subscribe(symbols=self.symbols, data_type=stype)
+                except Exception:
+                    self.logger.log_console("WARN", f"Subscription for data_type='{stype}' might not be supported but proceeding.")
+            
             return True
 
         except Exception as e:
             self.logger.log_console("ERROR", f"Failed to connect to Fyers WebSocket: {e}")
             return False
 
-    def get_historical_data(self, symbol, resolution='D', days_of_data=100):
-        """Fetches historical OHLC data with error handling."""
-        if self.fyers_rest_client is None:
-            self.logger.log_console("ERROR", f"REST client not initialized. Cannot fetch historical data for {symbol}.")
-            return pd.DataFrame()
+    def stop(self):
+        self.logger.log_console("INFO", "Stopping WebSocket connection...")
+        if self.fyers_ws:
+            self.fyers_ws.unsubscribe(symbols=self.symbols)
+            self.fyers_ws.close_connection()
 
-        to_date = datetime.now()
+    def get_historical_data(self, symbol, resolution='D', days_of_data=100):
+        if self.fyers_rest_client is None: return pd.DataFrame()
+        to_date = datetime.now(self.timezone)
         from_date = to_date - timedelta(days=days_of_data)
-        data = {
-            "symbol": symbol,
-            "resolution": resolution,
-            "date_format": "1",
-            "range_from": from_date.strftime('%Y-%m-%d'),
-            "range_to": to_date.strftime('%Y-%m-%d'),
-            "cont_flag": "1"
-        }
+        data = { "symbol": symbol, "resolution": resolution, "date_format": "1",
+            "range_from": from_date.strftime('%Y-%m-%d'), "range_to": to_date.strftime('%Y-%m-%d'), "cont_flag": "1" }
         try:
             response = self.fyers_rest_client.history(data=data)
             if response.get("s") == "ok":
-                candles = response.get('candles', [])
-                if not candles: return pd.DataFrame()
-                df = pd.DataFrame(candles, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
-                df['datetime'] = pd.to_datetime(df['datetime'], unit='s')
+                df = pd.DataFrame(response.get('candles', []), columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
+                df['datetime'] = pd.to_datetime(df['datetime'], unit='s').dt.tz_localize('UTC').dt.tz_convert(self.timezone)
                 return df
-            else:
-                self.logger.log_console("ERROR", f"API error fetching history for {symbol}: {response.get('message', 'Unknown error')}")
-                return pd.DataFrame()
+            return pd.DataFrame()
         except Exception as e:
             self.logger.log_console("ERROR", f"Exception in get_historical_data for {symbol}: {e}")
             return pd.DataFrame()
+
+    def _aggregate_tick(self, ts, symbol, price, volume):
+        current_minute = ts.replace(second=0, microsecond=0)
+        self.candles_1min_data.append({
+            'datetime': current_minute, 'symbol': symbol, 'open': price, 'high': price, 
+            'low': price, 'close': price, 'volume': volume
+        })
+        if current_minute.minute % 15 == 0:
+            if self.last_15min_resample_time != current_minute:
+                self.last_15min_resample_time = current_minute
+                self._resample_to_15min(current_minute)
+
+    def _resample_to_15min(self, current_boundary_time):
+        if not self.candles_1min_data: return
+        df_1min = pd.DataFrame(self.candles_1min_data)
+        df_1min['datetime'] = pd.to_datetime(df_1min['datetime'])
+        df_1min = df_1min.set_index('datetime')
+        
+        end_time = current_boundary_time
+        start_time = end_time - timedelta(minutes=15)
+        
+        interval_df = df_1min[(df_1min.index >= start_time) & (df_1min.index < end_time)]
+        if interval_df.empty: return
+
+        agg_rules = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+        resampled = interval_df.groupby('symbol').resample('15T', label='left', closed='left').agg(agg_rules)
+        
+        for symbol, group in resampled.groupby(level=0):
+            if group.empty: continue
             
-    def on_message(self, msg):
-        """Callback to process incoming tick data from the websocket."""
-        try:
-            # Fyers sends a list of ticks in a single message
-            ticks = msg.get('d', {}).get('7208', [])
-            for tick in ticks:
-                symbol = tick['v']['symbol']
-                ltp = tick['v']['ltp']
-                
-                if symbol in self.last_tick_prices:
-                    self.last_tick_prices[symbol] = ltp
-                    self.event_bus.publish('TICK', {'symbol': symbol, 'price': ltp})
-                    self._aggregate_to_1min(symbol, ltp, tick.get('v', {}).get('volume', 0))
-        except Exception as e:
-            self.logger.log_console("ERROR", f"Error processing tick message: {msg} | Exception: {e}")
-
-
-    def _aggregate_to_1min(self, symbol, price, volume):
-        """Aggregates ticks into 1-minute candles."""
-        now = datetime.now()
-        current_minute = now.replace(second=0, microsecond=0)
-        
-        candle_list = self.candles_1min[symbol]
-        
-        if not candle_list or candle_list[-1]['datetime'] != current_minute:
-            # New 1-min candle starts
-            new_candle = {
-                'datetime': current_minute,
-                'open': price, 'high': price,
-                'low': price, 'close': price, 'volume': int(volume)
-            }
-            candle_list.append(new_candle)
+            candle_timestamp = group.index[-1][1]
+            candle_15min_data = group.iloc[-1].to_dict()
             
-            # Check if a 15-min candle just closed
-            if len(candle_list) > 1 and current_minute.minute > 0 and current_minute.minute % 15 == 0:
-                 self._aggregate_to_15min(symbol, candle_list[-2]['datetime'])
-        else:
-            # Update current 1-min candle
-            candle_list[-1]['high'] = max(candle_list[-1]['high'], price)
-            candle_list[-1]['low'] = min(candle_list[-1]['low'], price)
-            candle_list[-1]['close'] = price
-            candle_list[-1]['volume'] += int(volume)
+            new_candle_df = pd.DataFrame([candle_15min_data], index=[candle_timestamp])
+            new_candle_df.index.name = 'datetime'
 
-    def _aggregate_to_15min(self, symbol, last_minute):
-        """Aggregates the last 15 1-minute candles into a single 15-minute candle."""
-        if len(self.candles_1min[symbol]) < 15:
-             return # Not enough data yet
+            hist_df = self.candles_15min[symbol]
+            if not hist_df.empty and candle_timestamp in hist_df.index:
+                hist_df = hist_df.drop(candle_timestamp)
 
-        # Get the last 15 candles for aggregation
-        relevant_candles = self.candles_1min[symbol][-15:]
-        fifteen_min_candles_df = pd.DataFrame(relevant_candles)
+            self.candles_15min[symbol] = pd.concat([hist_df, new_candle_df])
+            
+            self.event_bus.publish('CANDLE_CLOSED_15MIN', {'symbol': symbol})
+            self.logger.log_console("DEBUG", f"15m candle for {symbol} closed @ {start_time.strftime('%H:%M')}")
         
-        if fifteen_min_candles_df.empty:
-            return
-
-        candle_15min_time = last_minute.replace(minute=(last_minute.minute // 15) * 15)
-        
-        agg_candle = {
-            'datetime': candle_15min_time,
-            'open': fifteen_min_candles_df['open'].iloc[0],
-            'high': fifteen_min_candles_df['high'].max(),
-            'low': fifteen_min_candles_df['low'].min(),
-            'close': fifteen_min_candles_df['close'].iloc[-1],
-            'volume': fifteen_min_candles_df['volume'].sum()
-        }
-        
-        new_row = pd.DataFrame([agg_candle])
-        self.candles_15min[symbol] = pd.concat([self.candles_15min[symbol], new_row], ignore_index=True)
-        
-        self.event_bus.publish('CANDLE_CLOSED_15MIN', {'symbol': symbol, 'candle': agg_candle})
-        self.logger.log_console("DEBUG", f"15m candle closed for {symbol} @ {candle_15min_time.strftime('%H:%M')}")
+        self.candles_1min_data = [d for d in self.candles_1min_data if d['datetime'] >= current_boundary_time]
 
